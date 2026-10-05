@@ -590,6 +590,69 @@ test('预设内容读取失败时不抛异常，退化为不改动设置', () =>
     openaiState.preset = original;
 });
 
+/* ---------------- 10. 优先读「思维链条目」 ---------------- */
+
+test('自动识别：优先读思维链条目，忽略变量名与格式外壳', () => {
+    resetExtensionSettings();
+    oai_settings.prompt_order = [{
+        character_id: 100001,
+        order: [{ identifier: 'acg', enabled: true }, { identifier: 'mode', enabled: true }],
+    }];
+    setCurrentPreset('咩咩预设 0.9.0', [
+        {
+            identifier: 'acg',
+            name: '🎭acg角色心理模型(需搭配世界书)',
+            content: '{{setvar::acg_think_format::\n<acg_think_format>\n请严格按照以下 XML 格式输出：\n<acg_think>...</acg_think>\n</acg_think_format>\n}}',
+        },
+        {
+            identifier: 'mode',
+            name: '🧠思维链-故事模式(多选一)',
+            content: '{{setvar::story_think_format::\n<think>\n本回合推理\n</think>\n}}',
+        },
+    ]);
+    assert.equal(power_user.reasoning.prefix, '<think>');
+    assert.equal(power_user.reasoning.suffix, '</think>');
+    assert.doesNotMatch(power_user.reasoning.prefix, /format|\{\{/);
+    assert.match(status(), /自动识别/);
+    const report = $('#raps_detect_report').text();
+    assert.match(report, /思维链条目/);
+    assert.doesNotMatch(report, /setvar/);
+});
+
+test('自动识别不会采用 `_format` 外壳名', () => {
+    resetExtensionSettings();
+    oai_settings.prompt_order = undefined;
+    setCurrentPreset('只有外壳的预设', [
+        {
+            identifier: 'acg',
+            name: '🎭acg角色心理模型',
+            content: '{{setvar::acg_think_format::\n<acg_think_format>\n<acg_think>...</acg_think>\n</acg_think_format>\n}}',
+        },
+    ]);
+    assert.equal(power_user.reasoning.prefix, '<acg_think>');
+    assert.equal(power_user.reasoning.suffix, '</acg_think>');
+});
+
+test('报告面板的「采用这组」按索引套用指定候选', () => {
+    resetExtensionSettings();
+    setCurrentPreset('多候选预设', [
+        { identifier: 'a', name: '🧠思维链-主块', content: '<think>\n推理一\n</think>' },
+        { identifier: 'b', name: '🧠思维链-备选块', content: '<thinking>\n推理二\n</thinking>' },
+    ]);
+    const autoApplied = power_user.reasoning.prefix;
+    assert.ok(autoApplied === '<think>' || autoApplied === '<thinking>', `自动采用了 ${autoApplied}`);
+
+    const otherIndex = autoApplied === '<think>' ? 1 : 0;
+    const $button = $(`#raps_detect_report .raps-adopt[data-index="${otherIndex}"]`);
+    assert.equal($button.length, 1, '应能找到另一条候选的「采用这组」按钮');
+    $button.trigger('click');
+
+    assert.notEqual(power_user.reasoning.prefix, autoApplied);
+    assert.ok(power_user.reasoning.prefix === '<think>' || power_user.reasoning.prefix === '<thinking>');
+    assert.match(status(), /自动识别/);
+    assert.equal($('#reasoning_prefix').val(), power_user.reasoning.prefix);
+});
+
 /* ---------------- 汇总 ---------------- */
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

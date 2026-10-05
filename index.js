@@ -251,22 +251,45 @@ function applySingleRule(rule) {
  * 自动识别：读当前预设的提示词，推断思维链标签
  * ------------------------------------------------------------------ */
 
-/** 收集当前预设里所有可扫描的文本 */
+/** 最近一次识别结果（报告面板的「采用」按钮要用） */
+let lastDetection = null;
+
+/**
+ * 当前 prompt_order 里启用的提示词 identifier。
+ * ST 里 prompt_order 按 character_id 区分（100000 = 默认，100001 = 首个角色）。
+ * @returns {Set<string>|null}
+ */
+function getEnabledPromptIds() {
+    try {
+        const order = oai_settings?.prompt_order;
+        if (!Array.isArray(order) || order.length === 0) {
+            return null;
+        }
+        const entry = order.find(item => item?.character_id === 100000) ?? order[order.length - 1];
+        const ids = (entry?.order ?? []).filter(item => item.enabled).map(item => String(item.identifier));
+        return ids.length > 0 ? new Set(ids) : null;
+    } catch (error) {
+        console.debug(LOG, '读取 prompt_order 失败，忽略启用状态', error);
+        return null;
+    }
+}
+
+/** 收集当前预设里所有可扫描的文本（含条目名与启用状态，供识别时判定优先级） */
 function getPresetCorpus() {
     const chunks = [];
     let presetName = '';
     try {
         presetName = String(oai_settings?.preset_settings_openai ?? $('#settings_preset_openai').val() ?? '');
         if (presetName !== '') {
-            chunks.push({ source: '预设名', text: presetName });
+            chunks.push({ source: '预设名', text: presetName, name: presetName, identifier: presetName });
         }
-        chunks.push(...collectPresetTexts(getChatCompletionPreset()));
+        chunks.push(...collectPresetTexts(getChatCompletionPreset(), { enabledIds: getEnabledPromptIds() }));
     } catch (error) {
         console.debug(LOG, '读取当前预设内容失败，仅用补充文本识别', error);
     }
     const extra = String(getSettings().extraText ?? '');
     if (extra.trim() !== '') {
-        chunks.push({ source: '补充文本', text: extra });
+        chunks.push({ source: '补充文本', text: extra, name: '补充文本', identifier: '补充文本' });
     }
     return { presetName, chunks };
 }
@@ -276,6 +299,18 @@ function runDetection() {
     const { presetName, chunks } = getPresetCorpus();
     const mode = getSettings().detectMode === 'aggressive' ? 'aggressive' : 'safe';
     const result = { ...detectReasoningTags(chunks, { mode }), presetName, mode, chunkCount: chunks.length };
+    lastDetection = result;
+
+    const summarize = (candidate) => candidate ? {
+        prefix: candidate.prefix,
+        suffix: candidate.suffix,
+        tagName: candidate.tagName,
+        pairing: candidate.pairing,
+        score: candidate.score,
+        cotEntry: !!candidate.cotEntry,
+        sources: candidate.sources,
+        evidence: String(candidate.evidence ?? '').slice(0, 200),
+    } : null;
 
     const settings = getSettings();
     settings.lastDetected = {
@@ -283,15 +318,9 @@ function runDetection() {
         at: new Date().toISOString(),
         mode,
         chunkCount: chunks.length,
-        best: result.best ? {
-            prefix: result.best.prefix,
-            suffix: result.best.suffix,
-            tagName: result.best.tagName,
-            pairing: result.best.pairing,
-            score: result.best.score,
-            sources: result.best.sources,
-            evidence: String(result.best.evidence ?? '').slice(0, 200),
-        } : null,
+        cotCandidateCount: result.cotCandidateCount ?? 0,
+        best: summarize(result.best),
+        candidates: result.candidates.slice(0, 5).map(summarize),
     };
 
     renderDetectReport(result);
@@ -344,9 +373,13 @@ function renderDetectReport(result) {
 
     result.candidates.slice(0, 5).forEach((candidate, index) => {
         const adopted = result.best === candidate;
+        const tags = [
+            candidate.cotEntry ? '［思维链条目］' : '',
+            candidate.enabledEntry ? '［已启用］' : (candidate.disabledOnly ? '［未启用］' : ''),
+        ].filter(Boolean).join('');
         const $row = $('<div class="raps-cand"></div>');
         $row.append($('<div class="raps-cand-title"></div>').text(
-            `${index === 0 ? '★ ' : ''}${candidate.tagName}　${JSON.stringify(candidate.prefix)} … ${JSON.stringify(candidate.suffix)}${adopted ? '　（已采用）' : ''}`,
+            `${index === 0 ? '★ ' : ''}${candidate.tagName}${tags}　${JSON.stringify(candidate.prefix)} … ${JSON.stringify(candidate.suffix)}${adopted ? '　（已采用）' : ''}`,
         ));
         $row.append($('<div class="raps-cand-sub"></div>').text(describeCandidate(candidate)));
         if (Array.isArray(candidate.sources) && candidate.sources.length > 0) {
@@ -355,8 +388,25 @@ function renderDetectReport(result) {
         if (candidate.evidence) {
             $row.append($('<div class="raps-cand-sub raps-cand-evidence"></div>').text(`依据：${candidate.evidence}`));
         }
+        const $actions = $('<div class="raps-cand-actions"></div>').appendTo($row);
+        $('<div class="menu_button raps-adopt"></div>')
+            .attr('data-index', index)
+            .attr('title', '直接把这组前后缀写入 ST 的自动解析设置')
+            .text('采用这组')
+            .appendTo($actions);
         $report.append($row);
     });
+}
+
+/** 报告面板里的「采用这组」：对指定候选直接套用 */
+function onAdoptCandidate(index) {
+    const candidate = lastDetection?.candidates?.[index];
+    if (!candidate) {
+        setStatus('这条候选已失效，请点「重新识别」。');
+        return;
+    }
+    const presetName = lastDetection.presetName || getCurrentPresetName() || '（未知）';
+    applyDetected(candidate, presetName, 'manual-adopt');
 }
 
 /** 「重新识别」按钮 */
@@ -690,6 +740,9 @@ function bindStaticUi() {
     });
     $('#raps_detect_now').on('click', onDetectNow);
     $('#raps_detect_to_rule').on('click', onDetectToRule);
+    $('#raps_detect_report').on('click', '.raps-adopt', function () {
+        onAdoptCandidate(Number($(this).attr('data-index')));
+    });
     $('#raps_extra_text').on('input', function () {
         getSettings().extraText = String($(this).val() ?? '');
         saveSettingsDebounced();

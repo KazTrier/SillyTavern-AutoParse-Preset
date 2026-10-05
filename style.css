@@ -52,6 +52,18 @@
     opacity: 0.7;
 }
 
+.raps-settings .raps-cand-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 3px;
+}
+
+.raps-settings .raps-cand-actions .menu_button {
+    padding: 0 6px;
+    margin: 0;
+    font-size: calc(var(--mainFontSize) * 0.85);
+}
+
 .raps-settings .raps-field-block {
     align-items: flex-start;
 }

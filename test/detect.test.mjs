@@ -288,6 +288,107 @@ test('常量表结构正常', () => {
     assert.equal(describeCandidate(null), '无候选');
 });
 
+/* ---------------- 真实大型预设的形态（咩咩预设 ver 0.9.0 的等价改写） ---------------- */
+
+const chunkyLike = {
+    prompt_order: [{
+        character_id: 100001,
+        order: [
+            { identifier: 'divider', enabled: true },
+            { identifier: 'init', enabled: true },
+            { identifier: 'acg', enabled: true },
+            { identifier: 'mode', enabled: false },
+            { identifier: 'card-prefill', enabled: false },
+        ],
+    }],
+    prompts: [
+        { identifier: 'divider', name: '1️⃣思维链', content: '' },
+        { identifier: 'init', name: '🧠初始化', content: '{{addvar::story_think_ini::\n[初始化]: 输出推理过程\n}}' },
+        {
+            identifier: 'acg',
+            name: '🎭acg角色心理模型(需搭配世界书)',
+            content: '{{setvar::acg角色心理模型_思维链::\n<acg_think_format>\n请严格按照以下 XML 格式输出：\n<acg_think>\nNPC名称:属性\n</acg_think>\n</acg_think_format>\n}}\n\n{{setvar::acg_think_format::\n<acg_think>...</acg_think>。\n}}',
+        },
+        { identifier: 'mode', name: '🧠思维链-故事模式(多选一)', content: '{{setvar::story_think_format::\n<story_driver>...</story_driver>\n}}' },
+        {
+            identifier: 'card-prefill',
+            name: '🧷卡原生思维链-预填充',
+            content: '</story_driver><|no-trans|>\n</thinking><|no-trans|>\n</think><|no-trans|>\n<think>\nthink is over...\n</think>',
+        },
+    ],
+};
+
+const enabledIdsOf = (preset) => new Set(
+    (preset.prompt_order?.[0]?.order ?? []).filter(item => item.enabled).map(item => String(item.identifier)),
+);
+
+test('咩咩形态：只读思维链条目，不选变量名/格式外壳', () => {
+    const res = detectReasoningTags(collectPresetTexts(chunkyLike, { enabledIds: enabledIdsOf(chunkyLike) }), { mode: 'safe' });
+    assert.ok(res.best, '应当识别出标签');
+    assert.equal(res.best.prefix, '<think>');
+    assert.equal(res.best.suffix, '</think>');
+    assert.equal(res.best.cotEntry, true);
+    assert.ok(res.cotCandidateCount > 0);
+});
+
+test('咩咩形态：STscript 宏（{{setvar::x::}} / {{getvar::x}}）绝不作为候选', () => {
+    const res = detectReasoningTags(collectPresetTexts(chunkyLike, { enabledIds: enabledIdsOf(chunkyLike) }), { mode: 'aggressive' });
+    assert.ok(res.candidates.length > 0);
+    for (const candidate of res.candidates) {
+        assert.doesNotMatch(candidate.prefix, /\{\{|::/, `候选出现宏: ${candidate.prefix}`);
+        assert.doesNotMatch(candidate.tagName, /::/);
+    }
+});
+
+test('咩咩形态：`_format` 外壳标签得分低于真正的块，且不算思维链条目', () => {
+    const res = detectReasoningTags(collectPresetTexts(chunkyLike, { enabledIds: enabledIdsOf(chunkyLike) }), { mode: 'aggressive' });
+    const shell = res.candidates.find(c => c.tagName === 'acg_think_format');
+    const block = res.candidates.find(c => c.tagName === 'acg_think');
+    assert.ok(shell, '外壳标签仍应作为候选出现（供参考）');
+    assert.ok(block);
+    assert.ok(shell.score < block.score, `外壳 ${shell.score} 应低于块 ${block.score}`);
+    assert.equal(shell.cotEntry, false);
+});
+
+test('思维链条目里的干净成对标签在 safe 模式可直接采用', () => {
+    const chunks = [
+        { source: 'acg', text: '<acg_think_format>\n<acg_think>...</acg_think>\n</acg_think_format>', name: '🎭acg角色心理模型' },
+        { source: 'cot', text: '{{setvar::story_think_format::\n<story_driver>...</story_driver>\n}}', name: '🧠思维链-故事模式' },
+    ];
+    const res = detectReasoningTags(chunks, { mode: 'safe' });
+    assert.equal(res.cotCandidateCount > 0, true);
+    assert.equal(res.best?.tagName, 'story_driver');
+    assert.equal(res.best?.cotEntry, true);
+});
+
+test('开标记与闭合标记不在同一条目时不配对（防跨条目瞎凑）', () => {
+    const chunks = [
+        { source: 'a', text: '请把思考写在 <tagthink> 里', name: 'entryA' },
+        { source: 'b', text: '结束标记是 <|end_thinking|>', name: 'entryB' },
+    ];
+    const res = detectReasoningTags(chunks, { mode: 'safe' });
+    assert.equal(res.candidates.some(c => c.pairing === 'keyword'), false);
+    assert.equal(res.candidates.some(c => c.suffix === '<|end_thinking|>'), false);
+    assert.equal(res.best, null);
+});
+
+test('collectPresetTexts：带 enabledIds 时标记启用状态，不带时为 undefined', () => {
+    const withIds = collectPresetTexts(chunkyLike, { enabledIds: enabledIdsOf(chunkyLike) });
+    const byIdentifier = new Map(withIds.map(chunk => [chunk.identifier, chunk]));
+    assert.equal(byIdentifier.get('acg').enabled, true);
+    assert.equal(byIdentifier.get('mode').enabled, false);
+    assert.equal(byIdentifier.get('acg').name, '🎭acg角色心理模型(需搭配世界书)');
+
+    const withoutIds = collectPresetTexts(chunkyLike);
+    assert.equal(withoutIds.find(chunk => chunk.identifier === 'acg').enabled, undefined);
+});
+
+test('思维链条目里的标签即使未启用也能被选中（多选一模式常常刚切过）', () => {
+    const res = detectReasoningTags(collectPresetTexts(chunkyLike), { mode: 'safe' });
+    assert.ok(res.best);
+    assert.equal(res.best.cotEntry, true);
+});
+
 /* ---------------- 汇总 ---------------- */
 
 console.log(`\n${passed} passed, ${failures.length} failed`);
