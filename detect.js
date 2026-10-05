@@ -627,6 +627,58 @@ export function detectReasoningTags(chunks, { mode = 'safe', limit = 10 } = {}) 
 }
 
 /**
+ * 思维链标签在正则里出现的迹象（用于判断这条正则是不是在「处理思维链的显示」）。
+ * 不含 内心 / inner —— 那是给玩家看的展示内容，与推理解析不冲突。
+ */
+const COT_TAG_IN_REGEX_PATTERN = /(think|thought|reason|cot|story[_\s-]?driver|brain|脑内|思考|推理|思维|ecot)/i;
+
+/** 替换内容像「美化」的样子：HTML 标签 / 内联样式 */
+const DECORATIVE_REPLACE_PATTERN = /<\/?(?:div|span|details|summary|b|i|u|em|strong|font|small|center|table|tr|td|th|p|br|hr|blockquote|code|pre|style|body)\b|class\s*=|style\s*=|background|border|border-radius|font-size|color\s*:/i;
+
+/**
+ * 找出预设里「自己处理思维链显示」的正则脚本（美化或隐藏）。
+ *
+ * 这类脚本跑在 AI_OUTPUT 阶段，**需要消息里还留着原始思维链文本**；
+ * 一旦 ST 的「自动解析」把推理块抽进推理区（流式阶段就抽走了），正则就再也看不到它，美化/隐藏都会失效。
+ * 所以检测到它们时应当自动关掉自动解析。
+ *
+ * 判据：脚本启用 + 作用在 AI 输出（placement 含 2/AI_OUTPUT）+ 不是 promptOnly +
+ *      findRegex 里点名了思维链类标签 + 替换内容要么「美化」（HTML/样式）要么「清空」（隐藏）。
+ *
+ * @param {{scriptName?: string, findRegex?: string, replaceString?: string, placement?: number[]|number, disabled?: boolean, promptOnly?: boolean}[]} scripts
+ * @returns {{scriptName: string, kind: 'beautify'|'hide'}[]}
+ */
+export function findCotDisplayScripts(scripts) {
+    if (!Array.isArray(scripts)) {
+        return [];
+    }
+    const found = [];
+    for (const script of scripts) {
+        if (!script || typeof script !== 'object' || script.disabled === true || script.promptOnly === true) {
+            continue;
+        }
+        const placement = Array.isArray(script.placement) ? script.placement : [script.placement];
+        const isAiOutput = placement.some(item => Number(item) === 2 || String(item).toUpperCase() === 'AI_OUTPUT');
+        if (!isAiOutput) {
+            continue;
+        }
+        const find = String(script.findRegex ?? '');
+        if (find === '' || !COT_TAG_IN_REGEX_PATTERN.test(find)) {
+            continue;
+        }
+        const replace = String(script.replaceString ?? '');
+        const kind = replace.trim() === ''
+            ? 'hide'
+            : (DECORATIVE_REPLACE_PATTERN.test(replace) ? 'beautify' : null);
+        if (!kind) {
+            continue;
+        }
+        found.push({ scriptName: String(script.scriptName ?? '(未命名)'), kind });
+    }
+    return found;
+}
+
+/**
  * 一行文字描述识别结果，用于状态栏与报告面板。
  * @param {object} candidate
  */

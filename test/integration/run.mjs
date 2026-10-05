@@ -408,11 +408,11 @@ test('事件处理后不抛异常并保持面板可用', () => {
 
 /* ---------------- 9. 自动识别（读当前预设的提示词） ---------------- */
 
-/** 换预设 = 换预设名 + 换提示词，并触发 ST 的预设切换事件 */
-function setCurrentPreset(name, prompts) {
+/** 换预设 = 换预设名 + 换提示词（可带 extensions 等额外字段），并触发 ST 的预设切换事件 */
+function setCurrentPreset(name, prompts, extra = {}) {
     presetState.selected = name;
     oai_settings.preset_settings_openai = name;
-    openaiState.preset = { prompts };
+    openaiState.preset = { prompts, ...extra };
     eventSource.emit(event_types.OAI_PRESET_CHANGED_AFTER);
 }
 
@@ -626,6 +626,48 @@ test('「自动解析」开关直接控制 ST 的自动解析状态，并被后�
     assert.equal(settings().autoParse, true);
     assert.equal(power_user.reasoning.auto_parse, true);
     assert.match(status(), /已开启 ST 的自动解析/);
+});
+
+/* ---------------- 11. 预设自带思维链美化/隐藏正则 → 暂停自动解析 ---------------- */
+
+const COT_PROMPTS = [{ identifier: 'cot', name: '🧠思维链-主块', content: '<脑内会议>本回合推理</脑内会议>' }];
+const BEAUTIFY_EXTRA = {
+    extensions: {
+        regex_scripts: [{
+            scriptName: '01-小左',
+            placement: [2],
+            findRegex: '<thinking_left>\\s*([\\s\\S]*?)\\s*<\\/thinking_left>',
+            replaceString: '<details style="color:#5b9bd5">$1</details>',
+        }],
+    },
+};
+
+test('预设自带思维链美化正则 → 自动暂停自动解析并说明原因', () => {
+    resetExtensionSettings();
+    setCurrentPreset('智脑-Z', COT_PROMPTS, BEAUTIFY_EXTRA);
+    assert.equal(power_user.reasoning.prefix, '<脑内会议>', '前后缀仍照常设置');
+    assert.equal(power_user.reasoning.auto_parse, false, '应自动关闭自动解析');
+    assert.equal($('#raps_auto_parse').prop('checked'), false, '面板开关应显示为关');
+    assert.match(status(), /已暂停自动解析/);
+    assert.match($('#raps_detect_report').text(), /01-小左/);
+});
+
+test('手动强开自动解析后，该预设不再被自动关闭', () => {
+    $('#raps_auto_parse').prop('checked', true).trigger('input');
+    assert.equal(power_user.reasoning.auto_parse, true);
+    assert.equal(settings().autoParseKeep.includes('智脑-Z'), true);
+    assert.match(status(), /强行开启自动解析/);
+
+    // 再切回同一个预设：仍保持开启
+    setCurrentPreset('智脑-Z', COT_PROMPTS, BEAUTIFY_EXTRA);
+    assert.equal(power_user.reasoning.auto_parse, true);
+});
+
+test('没有美化正则的预设不受影响（自动解析照常开）', () => {
+    resetExtensionSettings();
+    setCurrentPreset('普通预设', COT_PROMPTS);
+    assert.equal(power_user.reasoning.prefix, '<脑内会议>');
+    assert.equal(power_user.reasoning.auto_parse, true);
 });
 
 /* ---------------- 汇总 ---------------- */

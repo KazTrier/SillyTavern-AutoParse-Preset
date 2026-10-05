@@ -20,7 +20,7 @@ import { eventSource, event_types, main_api, saveSettingsDebounced } from '../..
 import { power_user } from '../../../power-user.js';
 import { getPresetManager } from '../../../preset-manager.js';
 import { getChatCompletionPreset, oai_settings } from '../../../openai.js';
-import { collectPresetTexts, describeCandidate, detectReasoningTags } from './detect.js';
+import { collectPresetTexts, describeCandidate, detectReasoningTags, findCotDisplayScripts } from './detect.js';
 import {
     MATCH_TYPES,
     MATCH_TYPE_LIST,
@@ -71,6 +71,10 @@ function getSettings() {
     if (typeof settings.extraText !== 'string') {
         settings.extraText = '';
     }
+    // 用户手动要求在「预设自带思维链美化正则」时也保持自动解析的预设名
+    if (!Array.isArray(settings.autoParseKeep)) {
+        settings.autoParseKeep = [];
+    }
     settings.rules = normalizeRules(settings.rules);
     return settings;
 }
@@ -96,9 +100,28 @@ function getCurrentPresetName() {
     return String($('#settings_preset_openai').val() ?? '');
 }
 
+/**
+ * 当前预设是否带了「自己处理思维链显示」的正则（美化 / 隐藏）。
+ * 这类脚本需要消息里保留原始思维链文本，所以此时要暂停自动解析。
+ */
+let autoParseSuppressed = false;
+
+/** 触发暂停的脚本名（用于状态栏提示） */
+let cotDisplayScripts = [];
+
 /** 面板上的「自动解析」总开关：扩展每次写入 auto_parse 都以此为准 */
 function wantAutoParse() {
-    return getSettings().autoParse !== false;
+    return getSettings().autoParse !== false && !autoParseSuppressed;
+}
+
+/** 暂停自动解析时给状态栏加一句说明 */
+function suppressionNote() {
+    if (!autoParseSuppressed || cotDisplayScripts.length === 0) {
+        return '';
+    }
+    const names = cotDisplayScripts.slice(0, 2).map(item => item.scriptName).join('、');
+    const kinds = cotDisplayScripts.some(item => item.kind === 'beautify') ? '美化' : '隐藏';
+    return `｜已暂停自动解析：预设自带思维链${kinds}正则（${names}${cotDisplayScripts.length > 2 ? ' 等' : ''}），开启会把原文抽走导致正则失效`;
 }
 
 /**
@@ -160,8 +183,12 @@ function syncNow(reason = 'manual') {
         return;
     }
 
-    // 无论是否命中规则都跑一次识别：面板要展示候选，用户也可能想把它固化成规则
+    // 无论是否命中规则都跑一次识别：面板要展示候选，用户也可能想把它改用另一组
     const detection = runDetection();
+    if (autoParseSuppressed) {
+        $('#raps_auto_parse').prop('checked', false);
+    }
+    const note = suppressionNote();
 
     const rule = findMatchingRule(settings.rules, presetName);
 
@@ -178,7 +205,7 @@ function syncNow(reason = 'manual') {
             suffix: detection.best.suffix,
         }, current);
         if (!update.changed) {
-            setStatus(`预设「${presetName}」的识别结果已经是当前设置，无需改动（${detection.best.tagName}）。`);
+            setStatus(`预设「${presetName}」的识别结果已经是当前设置，无需改动（${detection.best.tagName}）。${note}`);
             return;
         }
         applyDetected(detection.best, presetName, reason);
@@ -189,7 +216,7 @@ function syncNow(reason = 'manual') {
         const tail = settings.autodetect
             ? '也没在思维链条目里找到成对标签，保持当前设置不变。'
             : '，且自动识别已关闭，保持当前设置不变。';
-        setStatus(`没有规则命中预设「${presetName}」，${tail}`);
+        setStatus(`没有规则命中预设「${presetName}」，${tail}${note}`);
         return;
     }
 
@@ -205,7 +232,7 @@ function syncNow(reason = 'manual') {
     update.auto_parse = wantAutoParse() && rule.autoParse !== false;
     update.changed = update.changed || update.auto_parse !== current.auto_parse;
     if (!update.changed) {
-        setStatus(`预设「${presetName}」命中规则，但已经是目标状态，无需改动。`);
+        setStatus(`预设「${presetName}」命中规则，但已经是目标状态，无需改动。${note}`);
         return;
     }
 
@@ -214,7 +241,7 @@ function syncNow(reason = 'manual') {
     settings.lastApplied = { preset: presetName, ruleId: rule.id, at: new Date().toISOString(), reason };
     saveSettingsDebounced();
 
-    setStatus(`已按预设「${presetName}」更新：前缀 ${JSON.stringify(update.prefix)}，后缀 ${JSON.stringify(update.suffix)}，自动解析${update.auto_parse ? '开' : '关'}。`);
+    setStatus(`已按预设「${presetName}」更新：前缀 ${JSON.stringify(update.prefix)}，后缀 ${JSON.stringify(update.suffix)}，自动解析${update.auto_parse ? '开' : '关'}。${note}`);
     console.debug(LOG, 'applied', { reason, presetName, update });
 }
 
@@ -262,12 +289,14 @@ function getEnabledPromptIds() {
 function getPresetCorpus() {
     const chunks = [];
     let presetName = '';
+    let presetBody = null;
     try {
         presetName = String(oai_settings?.preset_settings_openai ?? $('#settings_preset_openai').val() ?? '');
         if (presetName !== '') {
             chunks.push({ source: '预设名', text: presetName, name: presetName, identifier: presetName });
         }
-        chunks.push(...collectPresetTexts(getChatCompletionPreset(), { enabledIds: getEnabledPromptIds() }));
+        presetBody = getChatCompletionPreset();
+        chunks.push(...collectPresetTexts(presetBody, { enabledIds: getEnabledPromptIds() }));
     } catch (error) {
         console.debug(LOG, '读取当前预设内容失败，仅用补充文本识别', error);
     }
@@ -275,13 +304,19 @@ function getPresetCorpus() {
     if (extra.trim() !== '') {
         chunks.push({ source: '补充文本', text: extra, name: '补充文本', identifier: '补充文本' });
     }
-    return { presetName, chunks };
+    return { presetName, chunks, presetBody };
 }
 
 /** 跑一次识别，刷新报告面板，并把结果记进设置 */
 function runDetection() {
-    const { presetName, chunks } = getPresetCorpus();
+    const { presetName, chunks, presetBody } = getPresetCorpus();
     const mode = 'safe';
+
+    // 预设自带的思维链美化 / 隐藏正则：它们需要原始思维链文本，命中就暂停自动解析
+    cotDisplayScripts = findCotDisplayScripts(presetBody?.extensions?.regex_scripts);
+    const keepAutoParse = (getSettings().autoParseKeep ?? []).includes(presetName);
+    autoParseSuppressed = cotDisplayScripts.length > 0 && !keepAutoParse;
+
     const result = { ...detectReasoningTags(chunks, { mode }), presetName, mode, chunkCount: chunks.length };
     lastDetection = result;
 
@@ -305,6 +340,8 @@ function runDetection() {
         cotCandidateCount: result.cotCandidateCount ?? 0,
         best: summarize(result.best),
         candidates: result.candidates.slice(0, 5).map(summarize),
+        cotDisplayScripts: cotDisplayScripts.map(item => ({ ...item })),
+        autoParseSuppressed,
     };
 
     renderDetectReport(result);
@@ -365,9 +402,9 @@ function applyDetected(candidate, presetName, reason) {
 
     if (reason === 'manual-adopt') {
         pinRuleForPreset(presetName, candidate);
-        setStatus(`已采用并记住：预设「${presetName}」→ 前缀 ${JSON.stringify(candidate.prefix)}，后缀 ${JSON.stringify(candidate.suffix)}（已写入规则表，以后切回这个预设都用它）`);
+        setStatus(`已采用并记住：预设「${presetName}」→ 前缀 ${JSON.stringify(candidate.prefix)}，后缀 ${JSON.stringify(candidate.suffix)}（已写入规则表，以后切回这个预设都用它）${suppressionNote()}`);
     } else {
-        setStatus(`已按预设「${presetName}」从思维链条目识别：前缀 ${JSON.stringify(candidate.prefix)}，后缀 ${JSON.stringify(candidate.suffix)}（${describeCandidate(candidate)}）`);
+        setStatus(`已按预设「${presetName}」从思维链条目识别：前缀 ${JSON.stringify(candidate.prefix)}，后缀 ${JSON.stringify(candidate.suffix)}（${describeCandidate(candidate)}）${suppressionNote()}`);
     }
     console.debug(LOG, 'detected & applied', { reason, presetName, tag: candidate.tagName, score: candidate.score });
 }
@@ -388,6 +425,12 @@ function renderDetectReport(result) {
     $report.append($('<div class="raps-dim"></div>').text(
         `当前预设：${result.presetName || '未知'}（只读思维链条目）`,
     ));
+
+    if (autoParseSuppressed) {
+        $report.append($('<div class="raps-cand-sub"></div>').text(
+            `检测到预设自带的思维链显示正则（${cotDisplayScripts.map(item => `${item.scriptName}·${item.kind === 'beautify' ? '美化' : '隐藏'}`).join('、')}），已自动暂停自动解析。`,
+        ));
+    }
 
     if (result.candidates.length === 0) {
         $report.append($('<div></div>').text(
@@ -645,12 +688,25 @@ function bindStaticUi() {
     });
     $('#raps_auto_parse').on('input', function () {
         const on = $(this).prop('checked');
-        getSettings().autoParse = on;
+        const settings = getSettings();
+        settings.autoParse = on;
+        const presetName = getCurrentPresetName();
+        if (on && autoParseSuppressed) {
+            // 用户明确要开：记住这个预设以后不再自动关闭
+            const keep = new Set(settings.autoParseKeep ?? []);
+            if (presetName) {
+                keep.add(presetName);
+            }
+            settings.autoParseKeep = [...keep];
+            autoParseSuppressed = false;
+            setStatus(`已为预设「${presetName || '（未知）'}」强行开启自动解析：它自带思维链显示正则，正则可能会失效。`);
+        } else {
+            setStatus(on
+                ? `已开启 ST 的自动解析。当前预设：${presetName || '（未知）'}`
+                : '已关闭 ST 的自动解析（前缀 / 后缀仍会跟随预设更新）。');
+        }
         saveSettingsDebounced();
         applyToPowerUser({ auto_parse: on });
-        setStatus(on
-            ? `已开启 ST 的自动解析。当前预设：${getCurrentPresetName() || '（未知）'}`
-            : '已关闭 ST 的自动解析（前缀 / 后缀仍会跟随预设更新）。');
     });
     $('#raps_autodetect').on('input', function () {
         getSettings().autodetect = $(this).prop('checked');

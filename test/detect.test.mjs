@@ -23,6 +23,7 @@ const mod = await import(`data:text/javascript;base64,${Buffer.from(source, 'utf
 const {
     collectPresetTexts,
     detectReasoningTags,
+    findCotDisplayScripts,
     isApplicable,
     describeCandidate,
     TAG_STYLES,
@@ -450,6 +451,48 @@ test('思维链条目里的标签即使未启用也能被选中（多选一模�
     const res = detectReasoningTags(collectPresetTexts(chunkyLike), { mode: 'safe' });
     assert.ok(res.best);
     assert.equal(res.best.cotEntry, true);
+});
+
+/* ---------------- 预设自带的思维链显示正则（美化 / 隐藏） ---------------- */
+
+test('findCotDisplayScripts：识别「美化」与「隐藏」两类思维链正则', () => {
+    const scripts = [
+        {
+            scriptName: '01-小左',
+            placement: [2],
+            findRegex: '/<thinking_left>\\s*([\\s\\S]*?)\\s*<\\/thinking_left>/g',
+            replaceString: '<details style="color:#5b9bd5">$1</details>',
+        },
+        {
+            scriptName: '隐藏思维链',
+            placement: [2],
+            findRegex: '/([\\s\\S]*?)<\\/(think_?fox~?)>\\s*?/g',
+            replaceString: '',
+        },
+    ];
+    const found = findCotDisplayScripts(scripts);
+    assert.equal(found.length, 2);
+    assert.equal(found[0].scriptName, '01-小左');
+    assert.equal(found[0].kind, 'beautify');
+    assert.equal(found[1].kind, 'hide');
+});
+
+test('findCotDisplayScripts：忽略停用 / promptOnly / 非 AI 输出 / 与思维链无关的脚本', () => {
+    const scripts = [
+        { scriptName: '停用', disabled: true, placement: [2], findRegex: '<thinking_x>', replaceString: '<div>x</div>' },
+        { scriptName: 'promptOnly', promptOnly: true, placement: [2], findRegex: '<thinking_x>', replaceString: '<div>x</div>' },
+        { scriptName: '作用在用户输入', placement: [1], findRegex: '<thinking_x>', replaceString: '<div>x</div>' },
+        { scriptName: '正文去壳', placement: [2], findRegex: '<content>([\\s\\S]*?)</content>', replaceString: '$1' },
+        { scriptName: '内心话美化', placement: [2], findRegex: '<inner>([\\s\\S]*?)</inner>', replaceString: '<div style="x">$1</div>' },
+        { scriptName: '只改名不美化', placement: [2], findRegex: '<thinking_y>', replaceString: 'think' },
+    ];
+    assert.deepEqual(findCotDisplayScripts(scripts), []);
+});
+
+test('findCotDisplayScripts：容忍畸形输入', () => {
+    assert.deepEqual(findCotDisplayScripts(null), []);
+    assert.deepEqual(findCotDisplayScripts('nope'), []);
+    assert.deepEqual(findCotDisplayScripts([null, 42, {}]), []);
 });
 
 /* ---------------- 汇总 ---------------- */
