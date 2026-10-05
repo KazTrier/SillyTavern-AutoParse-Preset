@@ -47,6 +47,7 @@ const EXTENSION_NAME = `third-party/${EXTENSION_FOLDER}`;
 
 const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
+    autoParse: true,
     notify: false,
     fallback: 'keep',
     autodetect: true,
@@ -66,6 +67,9 @@ function getSettings() {
     }
     if (typeof settings.enabled !== 'boolean') {
         settings.enabled = DEFAULT_SETTINGS.enabled;
+    }
+    if (typeof settings.autoParse !== 'boolean') {
+        settings.autoParse = DEFAULT_SETTINGS.autoParse;
     }
     if (typeof settings.notify !== 'boolean') {
         settings.notify = DEFAULT_SETTINGS.notify;
@@ -105,6 +109,11 @@ function getCurrentPresetName() {
         console.debug(LOG, '读取预设管理器失败，回退到下拉框取值', error);
     }
     return String($('#settings_preset_openai').val() ?? '');
+}
+
+/** 面板上的「自动解析」总开关：扩展每次写入 auto_parse 都以此为准 */
+function wantAutoParse() {
+    return getSettings().autoParse !== false;
 }
 
 /**
@@ -179,7 +188,7 @@ function syncNow(reason = 'manual') {
             separator: power_user.reasoning?.separator ?? '',
         };
         const update = resolveReasoningUpdate({
-            autoParse: true,
+            autoParse: wantAutoParse(),
             prefix: detection.best.prefix,
             suffix: detection.best.suffix,
         }, current);
@@ -213,6 +222,9 @@ function syncNow(reason = 'manual') {
     };
 
     const update = resolveReasoningUpdate(rule, current);
+    // 面板上的「自动解析」是主开关（关了就一律不开）；规则自己的开关可以在主开关打开时单独关掉某个预设
+    update.auto_parse = wantAutoParse() && rule.autoParse !== false;
+    update.changed = update.changed || update.auto_parse !== current.auto_parse;
     if (!update.changed) {
         setStatus(`预设「${presetName}」命中规则，但已经是目标状态，无需改动。`);
         return;
@@ -390,10 +402,11 @@ function pinRuleForPreset(presetName, candidate) {
 
 /** 把识别结果套用到 ST 的推理设置 */
 function applyDetected(candidate, presetName, reason) {
-    applyToPowerUser({ auto_parse: true, prefix: candidate.prefix, suffix: candidate.suffix });
+    const autoParse = wantAutoParse();
+    applyToPowerUser({ auto_parse: autoParse, prefix: candidate.prefix, suffix: candidate.suffix });
 
     const settings = getSettings();
-    const signature = `${candidate.prefix}\u0000${candidate.suffix}\u0000true`;
+    const signature = `${candidate.prefix}\u0000${candidate.suffix}\u0000${autoParse}`;
     settings.lastApplied = {
         preset: presetName,
         source: reason === 'manual-adopt' ? 'manual' : 'detected',
@@ -443,7 +456,7 @@ function renderDetectReport(result) {
         return;
     }
 
-    result.candidates.slice(0, 5).forEach((candidate, index) => {
+    result.candidates.slice(0, 3).forEach((candidate, index) => {
         const adopted = result.best === candidate;
         const $row = $('<div class="raps-cand"></div>');
 
@@ -626,7 +639,12 @@ function expandRule(id) {
 
 function refreshStaticUi() {
     const settings = getSettings();
+    // 「自动解析」以 ST 当前状态为准（用户也可能在 ST 自己的推理面板里改）
+    if (power_user?.reasoning && typeof power_user.reasoning.auto_parse === 'boolean') {
+        settings.autoParse = power_user.reasoning.auto_parse;
+    }
     $('#raps_enabled').prop('checked', settings.enabled);
+    $('#raps_auto_parse').prop('checked', settings.autoParse !== false);
     $('#raps_notify').prop('checked', settings.notify);
     $('#raps_fallback').val(settings.fallback);
     $('#raps_autodetect').prop('checked', settings.autodetect);
@@ -797,6 +815,15 @@ function bindStaticUi() {
     $('#raps_notify').on('input', function () {
         getSettings().notify = $(this).prop('checked');
         saveSettingsDebounced();
+    });
+    $('#raps_auto_parse').on('input', function () {
+        const on = $(this).prop('checked');
+        getSettings().autoParse = on;
+        saveSettingsDebounced();
+        applyToPowerUser({ auto_parse: on });
+        setStatus(on
+            ? `已开启 ST 的自动解析。当前预设：${getCurrentPresetName() || '（未知）'}`
+            : '已关闭 ST 的自动解析（前缀 / 后缀仍会跟随预设更新）。');
     });
     $('#raps_fallback').on('change', function () {
         getSettings().fallback = $(this).val() === 'disable' ? 'disable' : 'keep';

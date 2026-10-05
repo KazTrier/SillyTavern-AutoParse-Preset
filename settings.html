@@ -7,13 +7,17 @@
         <div class="inline-drawer-content">
 
             <div class="raps-row raps-row-main">
-                <label class="checkbox_label" for="raps_enabled">
+                <label class="checkbox_label" for="raps_enabled" title="总开关：切换预设时自动设置自动解析的前后缀">
                     <input id="raps_enabled" type="checkbox">
                     <span>启用</span>
                 </label>
-                <label class="checkbox_label" for="raps_autodetect">
+                <label class="checkbox_label" for="raps_auto_parse" title="ST「推理 → 自动解析」的开关，直接写 power_user.reasoning.auto_parse">
+                    <input id="raps_auto_parse" type="checkbox">
+                    <span>自动解析</span>
+                </label>
+                <label class="checkbox_label" for="raps_autodetect" title="只读预设里的思维链条目来推断前后缀">
                     <input id="raps_autodetect" type="checkbox">
-                    <span>自动识别思维链条目</span>
+                    <span>自动识别思维链</span>
                 </label>
                 <div id="raps_apply_now" class="menu_button" title="立刻按当前预设重新应用一次">立即应用</div>
             </div>

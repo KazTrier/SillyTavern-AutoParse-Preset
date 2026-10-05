@@ -87,7 +87,7 @@ test('思维链条目里：关键词标签优先于出现次数更多的结构�
         name: '🧠思维链-主块',
         text: '<latest_message>hi</latest_message>'.repeat(9) + '\n<CONTEXT>a</CONTEXT>\n<Reasoning>think here</Reasoning>',
     }], { mode: 'safe' });
-    assert.equal(res.pool, 'named-cot');
+    assert.equal(res.pool, 'cot-primary');
     assert.equal(res.best?.tagName, 'Reasoning');
 });
 
@@ -122,7 +122,8 @@ test('自定义标签 + 中文包裹说明 → safe 模式也能识别', () => {
     const best = bestOf('请把所有思考过程写在 <inner_voice></inner_voice> 之间，正文另起一行。');
     assert.equal(best?.prefix, '<inner_voice>');
     assert.equal(best?.suffix, '</inner_voice>');
-    assert.equal(best?.keyword, true, 'inner 属于思维链关键词');
+    // 「内心/inner」不再算思维链关键词（NPC 内心话是给玩家看的正文），靠「包裹说明」识别
+    assert.equal(best?.keyword, false);
     assert.equal(best?.instruction, true);
 });
 
@@ -363,16 +364,21 @@ test('收尾型条目（闭合标记多于开标记）即使名字含思维链�
     }
 });
 
-test('pool 反映来源级别：named-cot / instruction / empty', () => {
-    const named = detectReasoningTags([{ source: 'a', name: '🧠思维链', text: '<story_driver>…</story_driver>' }], { mode: 'safe' });
-    assert.equal(named.pool, 'named-cot');
-    assert.equal(named.best?.tagName, 'story_driver');
+test('pool 反映来源级别：cot-primary / cot-secondary / instruction / empty', () => {
+    const primary = detectReasoningTags([{ source: 'a', name: '🧠思维链', text: '<story_driver>…</story_driver>' }], { mode: 'safe' });
+    assert.equal(primary.pool, 'cot-primary');
+    assert.equal(primary.best?.tagName, 'story_driver');
+    assert.equal(primary.tier, 4);
 
-    const instructed = detectReasoningTags([{ source: 'b', name: '主提示词', text: '把思考写在 <inner_voice></inner_voice> 里' }], { mode: 'safe' });
+    const secondary = detectReasoningTags([{ source: 'b', name: '📍常规创作思维', text: '<electric>…</electric>' }], { mode: 'safe' });
+    assert.equal(secondary.pool, 'cot-secondary');
+    assert.equal(secondary.best?.tagName, 'electric');
+
+    const instructed = detectReasoningTags([{ source: 'c', name: '主提示词', text: '把思考写在 <inner_voice></inner_voice> 里' }], { mode: 'safe' });
     assert.equal(instructed.pool, 'instruction');
     assert.equal(instructed.best?.tagName, 'inner_voice');
 
-    const none = detectReasoningTags([{ source: 'c', name: '主提示词', text: '<npc>a</npc>' }], { mode: 'safe' });
+    const none = detectReasoningTags([{ source: 'd', name: '主提示词', text: '<npc>a</npc>' }], { mode: 'safe' });
     assert.equal(none.pool, 'empty');
     assert.equal(none.best, null);
 });
@@ -383,7 +389,7 @@ test('名称级思维链条目优先于仅靠内容说明的条目', () => {
         { source: 'cot', name: '🧠思维链-主块', text: '<story_driver>…</story_driver>' },
     ];
     const res = detectReasoningTags(chunks, { mode: 'safe' });
-    assert.equal(res.pool, 'named-cot');
+    assert.equal(res.pool, 'cot-primary');
     assert.equal(res.best?.tagName, 'story_driver');
     assert.equal(res.candidates.some(c => c.tagName === 'inner_voice'), false);
 });

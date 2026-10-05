@@ -5,7 +5,7 @@
 export const power_user = {
     reasoning: {
         name: 'Think XML',
-        auto_parse: false,
+        auto_parse: true,
         prefix: '<default-prefix>',
         suffix: '<default-suffix>',
         separator: '\n',

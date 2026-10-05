@@ -163,7 +163,7 @@ test('面板渲染出示例规则行，并绑定全部设置事件', () => {
 test('启动时示例规则停用 + 无其它规则 ⇒ 不改动 ST 的推理设置', () => {
     assert.equal(power_user.reasoning.prefix, '<default-prefix>');
     assert.equal(power_user.reasoning.suffix, '<default-suffix>');
-    assert.equal(power_user.reasoning.auto_parse, false);
+    assert.equal(power_user.reasoning.auto_parse, true);
     assert.match(status(), /没有规则命中/);
 });
 
@@ -450,6 +450,7 @@ function setCurrentPreset(name, prompts) {
 function resetExtensionSettings(overrides = {}) {
     extension_settings[SETTINGS_KEY] = {
         enabled: true,
+        autoParse: true,
         notify: false,
         fallback: 'keep',
         autodetect: true,
@@ -686,6 +687,25 @@ test('弹窗提醒默认关闭；打开后仅手动操作提醒，且同样的�
 
     $('#raps_detect_now').trigger('click');
     assert.equal(toasts.length, baseline + 1, '同样的结果不重复提醒');
+});
+
+test('「自动解析」开关直接控制 ST 的自动解析状态，并被后续同步沿用', () => {
+    resetExtensionSettings();
+    $('#raps_auto_parse').prop('checked', false).trigger('input');
+    assert.equal(settings().autoParse, false);
+    assert.equal(power_user.reasoning.auto_parse, false);
+    assert.match(status(), /已关闭 ST 的自动解析/);
+
+    setCurrentPreset('开关测试预设', [
+        { identifier: 'c', name: '🧠思维链-主块', content: '<story_driver>推理</story_driver>' },
+    ]);
+    assert.equal(power_user.reasoning.prefix, '<story_driver>', '前后缀仍跟随预设更新');
+    assert.equal(power_user.reasoning.auto_parse, false, '关闭后切换预设不应把它打开');
+
+    $('#raps_auto_parse').prop('checked', true).trigger('input');
+    assert.equal(settings().autoParse, true);
+    assert.equal(power_user.reasoning.auto_parse, true);
+    assert.match(status(), /已开启 ST 的自动解析/);
 });
 
 /* ---------------- 汇总 ---------------- */
