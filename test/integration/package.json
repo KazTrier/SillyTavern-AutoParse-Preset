@@ -1,0 +1,13 @@
+{
+    "name": "raps-integration-test",
+    "private": true,
+    "type": "module",
+    "description": "reasoning-autoparse-preset 的 jsdom 集成测试（不参与 ST 运行时）",
+    "scripts": {
+        "test": "node run.mjs"
+    },
+    "devDependencies": {
+        "jsdom": "^30.1.1",
+        "jquery": "3.7.1"
+    }
+}

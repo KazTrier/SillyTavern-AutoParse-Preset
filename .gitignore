@@ -1,0 +1,8 @@
+# 跑 test/integration 时本地安装的依赖，不入库
+node_modules/
+package-lock.json
+
+# 杂项
+.DS_Store
+Thumbs.db
+*.log

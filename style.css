@@ -1,0 +1,175 @@
+.raps-settings .raps-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+.raps-settings .raps-label {
+    white-space: nowrap;
+}
+
+.raps-settings .raps-section-title {
+    margin: 4px 0 2px;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    font-weight: 600;
+    opacity: 0.9;
+}
+
+.raps-settings .raps-report {
+    margin: 4px 0;
+    padding: 4px 6px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 4px;
+    max-height: 240px;
+    overflow-y: auto;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    line-height: 1.35;
+}
+
+.raps-settings .raps-dim {
+    opacity: 0.75;
+}
+
+.raps-settings .raps-cand {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px dashed var(--SmartThemeBorderColor);
+}
+
+.raps-settings .raps-cand-title {
+    word-break: break-word;
+    font-weight: 600;
+}
+
+.raps-settings .raps-cand-sub {
+    opacity: 0.85;
+    word-break: break-word;
+}
+
+.raps-settings .raps-cand-evidence {
+    font-style: italic;
+    opacity: 0.7;
+}
+
+.raps-settings .raps-field-block {
+    align-items: flex-start;
+}
+
+.raps-settings .raps-field-block textarea {
+    flex: 1;
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.raps-settings .raps-status {
+    margin: 6px 0;
+    padding: 4px 6px;
+    border-radius: 4px;
+    background-color: rgba(128, 128, 128, 0.12);
+    font-size: calc(var(--mainFontSize) * 0.9);
+    line-height: 1.35;
+    word-break: break-word;
+}
+
+.raps-settings .raps-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    margin: 6px 0;
+}
+
+.raps-settings .raps-rules {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.raps-settings .raps-rule {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    padding: 4px 6px;
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+.raps-settings .raps-rule.raps-rule-disabled {
+    opacity: 0.55;
+}
+
+.raps-settings .raps-rule.raps-rule-bad {
+    border-color: rgba(200, 80, 80, 0.75);
+}
+
+.raps-settings .raps-rule-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.raps-settings .raps-rule-summary {
+    flex: 1;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    line-height: 1.3;
+    word-break: break-word;
+}
+
+.raps-settings .raps-rule-actions {
+    display: flex;
+    gap: 2px;
+}
+
+.raps-settings .raps-rule-actions .menu_button {
+    padding: 0 5px;
+    margin: 0;
+    min-width: unset;
+}
+
+.raps-settings .raps-rule-editor {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--SmartThemeBorderColor);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.raps-settings .raps-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.raps-settings .raps-field > span {
+    flex: 0 0 5.5em;
+    font-size: calc(var(--mainFontSize) * 0.9);
+}
+
+.raps-settings .raps-field input[type="text"],
+.raps-settings .raps-field select {
+    flex: 1;
+    min-width: 0;
+}
+
+.raps-settings .raps-rule-warn {
+    font-size: calc(var(--mainFontSize) * 0.85);
+    line-height: 1.3;
+    color: var(--warning, #d9a441);
+}
+
+.raps-settings .raps-rule-warn .raps-error {
+    color: var(--active, #e06c6c);
+}
+
+.raps-settings .raps-hint {
+    margin-top: 8px;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    line-height: 1.4;
+    opacity: 0.85;
+}
+
+.raps-settings .raps-io textarea {
+    width: 100%;
+    box-sizing: border-box;
+}
