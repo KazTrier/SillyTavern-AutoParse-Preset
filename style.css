@@ -47,6 +47,39 @@
     word-break: break-word;
 }
 
+.raps-settings .raps-cand-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.raps-settings .raps-cand-head .menu_button {
+    padding: 0 8px;
+    margin: 0;
+    font-size: calc(var(--mainFontSize) * 0.85);
+}
+
+.raps-settings .raps-cand-tags {
+    flex: 1;
+    min-width: 0;
+    opacity: 0.85;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    word-break: break-all;
+}
+
+.raps-settings .raps-sub {
+    margin-top: 8px;
+}
+
+.raps-settings .raps-sub > .inline-drawer-header span {
+    font-size: calc(var(--mainFontSize) * 0.95);
+}
+
+.raps-settings .raps-row-main {
+    flex-wrap: wrap;
+}
+
 .raps-settings .raps-cand-evidence {
     font-style: italic;
     opacity: 0.7;

@@ -81,11 +81,14 @@ test('「reason using \'<think>\' tags」→ 选中 <think>', () => {
     assert.equal(best?.suffix, '</think>');
 });
 
-test('关键词标签优先于出现次数更多的结构性标签', () => {
-    const best = bestOf(
-        '<latest_message>hi</latest_message>'.repeat(9) + '\n<CONTEXT>a</CONTEXT>\n<Reasoning>think here</Reasoning>',
-    );
-    assert.equal(best?.tagName, 'Reasoning');
+test('思维链条目里：关键词标签优先于出现次数更多的结构性标签', () => {
+    const res = detectReasoningTags([{
+        source: 'cot',
+        name: '🧠思维链-主块',
+        text: '<latest_message>hi</latest_message>'.repeat(9) + '\n<CONTEXT>a</CONTEXT>\n<Reasoning>think here</Reasoning>',
+    }], { mode: 'safe' });
+    assert.equal(res.pool, 'named-cot');
+    assert.equal(res.best?.tagName, 'Reasoning');
 });
 
 /* ---------------- 必须判为「无」的情况 ---------------- */
@@ -97,7 +100,9 @@ test('只有结构性标签 → safe 模式返回 null，不改动设置', () =>
         '<objective>stay in character</objective>',
     ), { mode: 'safe' });
     assert.equal(result.best, null);
-    assert.ok(result.candidates.length > 0, '仍应给出候选供用户参考');
+    assert.equal(result.pool, 'empty');
+    assert.equal(result.candidates.length, 0, 'safe 模式不展示非思维链条目的候选');
+    assert.ok(result.ignoredCandidates.length > 0, '被忽略的候选仍应可查（报告里会提示数量）');
 });
 
 test('结构性标签即使成对出现也不会被 safe 模式采用', () => {
@@ -322,13 +327,65 @@ const enabledIdsOf = (preset) => new Set(
     (preset.prompt_order?.[0]?.order ?? []).filter(item => item.enabled).map(item => String(item.identifier)),
 );
 
-test('咩咩形态：只读思维链条目，不选变量名/格式外壳', () => {
+test('咩咩形态：只读思维链条目，压原生思维链的预填充被排除，选中 <story_driver>', () => {
     const res = detectReasoningTags(collectPresetTexts(chunkyLike, { enabledIds: enabledIdsOf(chunkyLike) }), { mode: 'safe' });
     assert.ok(res.best, '应当识别出标签');
-    assert.equal(res.best.prefix, '<think>');
-    assert.equal(res.best.suffix, '</think>');
+    assert.equal(res.best.prefix, '<story_driver>');
+    assert.equal(res.best.suffix, '</story_driver>');
     assert.equal(res.best.cotEntry, true);
-    assert.ok(res.cotCandidateCount > 0);
+    assert.equal(res.candidates.some(c => c.tagName === 'think'), false, '压制型预填充里的 <think> 不应出现');
+});
+
+test('反思维链条目整个排除：卡原生思维链-预填充里的 </think> 不会被误用', () => {
+    const chunks = [
+        {
+            source: 'killer',
+            name: '🧷卡原生思维链-预填充',
+            text: '</story_driver><|no-trans|>\n</thinking><|no-trans|>\n</think><|no-trans|>\n<think>\nthink is over...\n</think>',
+        },
+        { source: 'real', name: '🧠思维链-故事模式', text: '{{setvar::story_think_format::\n把思考写在 <story_driver></story_driver> 里\n}}' },
+    ];
+    const res = detectReasoningTags(chunks, { mode: 'safe' });
+    assert.equal(res.best?.tagName, 'story_driver');
+    assert.equal(res.candidates.some(c => c.tagName === 'think'), false);
+    assert.equal(res.candidates.some(c => c.tagName === 'thinking'), false);
+});
+
+test('收尾型条目（闭合标记多于开标记）即使名字含思维链也被排除', () => {
+    const chunks = [
+        { source: 'closer', name: '思维链-收尾预填充', text: '</thinking>\n</think>\n</reasoning>' },
+        { source: 'giver', name: '思维链-格式', text: '把思考写在 <inner_voice></inner_voice> 里' },
+    ];
+    const res = detectReasoningTags(chunks, { mode: 'safe' });
+    assert.equal(res.best?.tagName, 'inner_voice');
+    for (const name of ['thinking', 'think', 'reasoning']) {
+        assert.equal(res.candidates.some(c => c.tagName === name), false, `${name} 不应作为候选`);
+    }
+});
+
+test('pool 反映来源级别：named-cot / instruction / empty', () => {
+    const named = detectReasoningTags([{ source: 'a', name: '🧠思维链', text: '<story_driver>…</story_driver>' }], { mode: 'safe' });
+    assert.equal(named.pool, 'named-cot');
+    assert.equal(named.best?.tagName, 'story_driver');
+
+    const instructed = detectReasoningTags([{ source: 'b', name: '主提示词', text: '把思考写在 <inner_voice></inner_voice> 里' }], { mode: 'safe' });
+    assert.equal(instructed.pool, 'instruction');
+    assert.equal(instructed.best?.tagName, 'inner_voice');
+
+    const none = detectReasoningTags([{ source: 'c', name: '主提示词', text: '<npc>a</npc>' }], { mode: 'safe' });
+    assert.equal(none.pool, 'empty');
+    assert.equal(none.best, null);
+});
+
+test('名称级思维链条目优先于仅靠内容说明的条目', () => {
+    const chunks = [
+        { source: 'instr', name: '主提示词', text: '把思考写在 <inner_voice></inner_voice> 里' },
+        { source: 'cot', name: '🧠思维链-主块', text: '<story_driver>…</story_driver>' },
+    ];
+    const res = detectReasoningTags(chunks, { mode: 'safe' });
+    assert.equal(res.pool, 'named-cot');
+    assert.equal(res.best?.tagName, 'story_driver');
+    assert.equal(res.candidates.some(c => c.tagName === 'inner_voice'), false);
 });
 
 test('咩咩形态：STscript 宏（{{setvar::x::}} / {{getvar::x}}）绝不作为候选', () => {

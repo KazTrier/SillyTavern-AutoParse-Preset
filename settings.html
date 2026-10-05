@@ -5,83 +5,95 @@
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <div class="raps-row">
+
+            <div class="raps-row raps-row-main">
                 <label class="checkbox_label" for="raps_enabled">
                     <input id="raps_enabled" type="checkbox">
-                    <span>启用（切换聊天补全预设时自动套用）</span>
+                    <span>启用</span>
                 </label>
-            </div>
-            <div class="raps-row">
-                <label class="checkbox_label" for="raps_notify">
-                    <input id="raps_notify" type="checkbox">
-                    <span>应用后弹出提示</span>
+                <label class="checkbox_label" for="raps_autodetect">
+                    <input id="raps_autodetect" type="checkbox">
+                    <span>自动识别思维链条目</span>
                 </label>
+                <div id="raps_apply_now" class="menu_button" title="立刻按当前预设重新应用一次">立即应用</div>
             </div>
 
             <div class="raps-status" id="raps_status">正在初始化…</div>
-
-            <hr>
-            <div class="raps-section-title">规则表（优先级最高）</div>
-            <div class="raps-toolbar">
-                <div id="raps_apply_now" class="menu_button" title="立刻按当前预设重新套用一次">立即应用</div>
-                <select id="raps_tpl_select" class="text_pole" title="新增规则时预填的前后缀模板"></select>
-                <div id="raps_add_rule" class="menu_button">＋ 新增规则</div>
-            </div>
-            <div id="raps_rules" class="raps-rules"></div>
-
-            <hr>
-            <div class="raps-section-title">自动识别（没有规则命中时）</div>
-            <div class="raps-row">
-                <label class="checkbox_label" for="raps_autodetect">
-                    <input id="raps_autodetect" type="checkbox">
-                    <span>读当前预设的提示词，自动推断思维链前后缀</span>
-                </label>
-            </div>
-            <div class="raps-row">
-                <span class="raps-label">识别模式</span>
-                <select id="raps_detect_mode" class="text_pole flex1">
-                    <option value="safe">安全：只认思维链相关标签（推荐）</option>
-                    <option value="aggressive">宽松：任意成对标签都采用（可能选错）</option>
-                </select>
-            </div>
-            <div class="raps-toolbar">
-                <div id="raps_detect_now" class="menu_button">重新识别</div>
-                <div id="raps_detect_to_rule" class="menu_button" title="把当前识别结果写成一条按预设名精确匹配的规则，方便手改">固化为规则</div>
-            </div>
             <div id="raps_detect_report" class="raps-report">尚未识别。</div>
-            <div class="raps-field raps-field-block">
-                <span>补充文本</span>
-                <textarea id="raps_extra_text" class="text_pole textarea_compact" rows="2"
-                    placeholder="可选：把预设之外的思维链格式说明粘到这里一起识别（例如正则脚本里写的标签）"></textarea>
-            </div>
 
-            <hr>
-            <div class="raps-row">
-                <span class="raps-label">都没有时</span>
-                <select id="raps_fallback" class="text_pole flex1">
-                    <option value="keep">保持当前设置不变</option>
-                    <option value="disable">关闭自动解析</option>
-                </select>
-            </div>
+            <div class="inline-drawer raps-sub">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <span>高级设置</span>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <div class="raps-row">
+                        <span class="raps-label">识别模式</span>
+                        <select id="raps_detect_mode" class="text_pole flex1">
+                            <option value="safe">安全：只读思维链条目（推荐）</option>
+                            <option value="aggressive">宽松：任意成对标签（可能选错）</option>
+                        </select>
+                    </div>
+                    <div class="raps-row">
+                        <span class="raps-label">都没命中时</span>
+                        <select id="raps_fallback" class="text_pole flex1">
+                            <option value="keep">保持当前设置不变</option>
+                            <option value="disable">关闭自动解析</option>
+                        </select>
+                    </div>
+                    <div class="raps-row">
+                        <label class="checkbox_label" for="raps_notify">
+                            <input id="raps_notify" type="checkbox">
+                            <span>应用后弹窗提醒（默认关闭）</span>
+                        </label>
+                    </div>
+                    <div class="raps-row">
+                        <div id="raps_detect_now" class="menu_button">重新识别</div>
+                        <div id="raps_detect_to_rule" class="menu_button" title="把当前识别结果的标签固定成一条按预设名精确匹配的规则">固化为规则</div>
+                    </div>
+                    <div class="raps-field raps-field-block">
+                        <span>补充文本</span>
+                        <textarea id="raps_extra_text" class="text_pole textarea_compact" rows="2"
+                            placeholder="可选：预设之外写明的思维链格式（例如正则脚本里的标签）"></textarea>
+                    </div>
 
-            <hr>
-            <div class="raps-io">
-                <textarea id="raps_io_text" class="text_pole textarea_compact" rows="4"
-                    placeholder="规则 JSON：点「导出到文本框」查看，或粘贴 JSON 后点「从文本框导入」"></textarea>
-                <div class="raps-toolbar">
-                    <div id="raps_export" class="menu_button">导出到文本框</div>
-                    <div id="raps_import" class="menu_button">从文本框导入</div>
-                    <div id="raps_reset" class="menu_button">恢复默认</div>
+                    <div class="inline-drawer raps-sub">
+                        <div class="inline-drawer-toggle inline-drawer-header">
+                            <span>规则表（优先级高于自动识别）</span>
+                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                        </div>
+                        <div class="inline-drawer-content">
+                            <div class="raps-toolbar">
+                                <select id="raps_tpl_select" class="text_pole flex1" title="新增规则时预填的前后缀模板"></select>
+                                <div id="raps_add_rule" class="menu_button">＋ 新增</div>
+                            </div>
+                            <div id="raps_rules" class="raps-rules"></div>
+                        </div>
+                    </div>
+
+                    <div class="inline-drawer raps-sub">
+                        <div class="inline-drawer-toggle inline-drawer-header">
+                            <span>导入 / 导出 / 恢复默认</span>
+                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                        </div>
+                        <div class="inline-drawer-content">
+                            <textarea id="raps_io_text" class="text_pole textarea_compact" rows="3"
+                                placeholder="规则 JSON：导出后显示在这里，也可粘贴 JSON 后导入"></textarea>
+                            <div class="raps-toolbar">
+                                <div id="raps_export" class="menu_button">导出</div>
+                                <div id="raps_import" class="menu_button">导入</div>
+                                <div id="raps_reset" class="menu_button">恢复默认</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="raps-hint">
+                        优先级：规则表 → 自动识别（只读思维链条目）→ 兜底。<br>
+                        识别不到就<b>不动</b>你现有的设置。候选里点「采用」即可改用那一组，并自动记住这个预设。
+                    </div>
                 </div>
             </div>
 
-            <div class="raps-hint">
-                优先级：<b>规则表</b> → <b>自动识别</b> → <b>兜底</b>。<br>
-                规则自上而下匹配，<b>第一条命中</b>的生效；规则里留空的 <b>前缀 / 后缀 / 分隔符</b> 表示「不修改」。<br>
-                自动识别会在预设里找成对标签，用「标签名是否与思维链相关 + 附近是否写明包裹方式」打分；
-                识别不到就<b>不动</b>你现有的设置。识别详情见上方报告，可一键固化成规则再手改。<br>
-                自动解析（Auto-Parse）需要前缀和后缀都非空才会解析推理块。
-            </div>
         </div>
     </div>
 </div>

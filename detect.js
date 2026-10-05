@@ -57,6 +57,13 @@ const THINKING_PATTERN = /(think|thought|reason|analysis|analy[sz]e|chain[_\s-]?
 export const COT_ENTRY_PATTERN = /(思维链|思维|思考|推理|内心|沉思|chain[_\s-]?of[_\s-]?thought|\bcot\b|think|thought|reason|scratchpad|reflect)/i;
 
 /**
+ * 「反思维链」条目：这类条目的用途是**压制/关闭**模型原生思维链，
+ * 例如「卡原生思维链-预填充」里写的其实是 `</think>` `</thinking>` 这类**收尾标记**，
+ * 它把原生思维链掐掉，绝不是本预设要用的思维链格式。这类条目整个排除。
+ */
+const ANTI_COT_ENTRY_PATTERN = /(卡原生|原生思维链|禁用|🈲|关闭思维|关闭思考|不输出思维|禁止输出|干掉|anti[_\s-]?think|no[_\s-]?think|think[_\s-]?(kill|off|disable))/i;
+
+/**
  * 形如 `<acg_think_format>` / `<story_think_format>` 的标签只是预设用来**包裹格式示例的外壳**，
  * 不是模型真正输出的内容块（真实预设里很常见），推断时重罚。
  */
@@ -205,6 +212,10 @@ function tokenize(chunks) {
             identifier,
             enabled: chunk?.enabled,
             cot: COT_ENTRY_PATTERN.test(name) || COT_ENTRY_PATTERN.test(identifier),
+            antiByName: ANTI_COT_ENTRY_PATTERN.test(name) || ANTI_COT_ENTRY_PATTERN.test(identifier),
+            opens: 0,
+            closes: 0,
+            anti: false,
         };
     });
 
@@ -214,6 +225,7 @@ function tokenize(chunks) {
             return;
         }
         const lines = text.split('\n');
+        const meta = chunkMeta[chunkIndex];
 
         for (const style of TAG_STYLES) {
             const pattern = new RegExp(`${escapeRegExp(style.left)}(${NAME_CHARS}{1,32})${escapeRegExp(style.right)}`, 'g');
@@ -229,6 +241,12 @@ function tokenize(chunks) {
                 }
 
                 const proposedKind = isClosingName(name) ? 'close' : 'open';
+                if (proposedKind === 'close') {
+                    meta.closes += 1;
+                } else {
+                    meta.opens += 1;
+                }
+
                 let token = tokens.get(full);
                 if (!token) {
                     token = {
@@ -251,35 +269,61 @@ function tokenize(chunks) {
                 if (!token.presences.has(chunkIndex)) {
                     token.presences.set(chunkIndex, match.index);
                 }
+                // 收集「包含该标签的行」，最多 5 条（带上**上一行**做上下文：
+                // 预设常常上一行写「请严格按照以下格式输出：」，下一行才是标签）
                 if (token.lines.length < 5) {
-                    const line = lines.find(item => item.includes(full));
-                    if (line) {
-                        token.lines.push(line.trim().slice(0, 300));
+                    for (let i = 0; i < lines.length && token.lines.length < 5; i++) {
+                        if (!lines[i].includes(full)) {
+                            continue;
+                        }
+                        const context = `${i > 0 ? lines[i - 1] : ''} ${lines[i]}`.trim().slice(0, 400);
+                        if (context !== '' && !token.lines.includes(context)) {
+                            token.lines.push(context);
+                        }
                     }
                 }
             }
         }
     });
 
+    // 「收尾型」条目：闭合标记明显多于开标记（≥2 个），典型就是压制原生思维链的预填充
+    for (const meta of chunkMeta) {
+        meta.anti = meta.antiByName || (meta.closes >= 2 && meta.closes > meta.opens);
+    }
+
     return { tokens: [...tokens.values()], chunkMeta };
+}
+
+/** 该 token 是否只出现在「反思维链」条目里（是的话整个丢弃） */
+function onlyInAntiChunks(token, chunkMeta) {
+    const indexes = [...token.presences.keys()];
+    return indexes.length > 0 && indexes.every(index => chunkMeta[index]?.anti);
+}
+
+/** 该 token 是否出现在「思维链条目」里（只看非反思维链的条目） */
+function inCotChunk(token, chunkMeta) {
+    return [...token.presences.keys()].some(index => chunkMeta[index]?.cot && !chunkMeta[index]?.anti);
 }
 
 /**
  * 为「只出现了开标记」的关键词标签找一个闭合标记。
  * 约束：必须在**同一条目**里、闭合标记在开标记**之后**、且括号风格兼容。
  */
-function findKeywordClose(openToken, tokens) {
+function findKeywordClose(openToken, tokens, chunkMeta) {
     for (const token of tokens) {
         if (token.kind !== 'close' || token.name === openToken.name) {
             continue;
         }
-        if (!THINKING_PATTERN.test(token.name)) {
+        if (!THINKING_PATTERN.test(token.name) || onlyInAntiChunks(token, chunkMeta)) {
             continue;
         }
         if (token.style !== openToken.style && !isTerminatorName(token.name)) {
             continue;
         }
         for (const [chunkIndex, openOffset] of openToken.presences) {
+            if (chunkMeta[chunkIndex]?.anti) {
+                continue;
+            }
             const closeOffset = token.presences.get(chunkIndex);
             if (closeOffset !== undefined && closeOffset > openOffset) {
                 return token;
@@ -297,9 +341,20 @@ function blocklisted(name) {
     return STRUCTURAL_TAG_BLOCKLIST.includes(String(name).trim().toLowerCase());
 }
 
+/**
+ * 从「该标签出现的行（含上一行）」里找「把思考包在 X 里」这类说明。
+ * 判断措辞前必须剥掉**标签本身**与 **STscript 宏**：
+ * 否则 `<acg_think_format>` 或 `{{setvar::acg_think_format::` 里的 `format` / `think`
+ * 会被自己当成「格式 + 思维链说明」，造成误判（真实踩过）。
+ */
 function instructionEvidence(token) {
     for (const line of token.lines) {
-        if (WRAP_CUE_PATTERN.test(line) && THINKING_PATTERN.test(line)) {
+        const prose = String(line)
+            .replace(/\{\{[^}\n]{0,200}?\}\}/g, ' ')   // 完整宏，如 {{char}}
+            .replace(/\{\{[^\n]*$/g, ' ')              // 行内未闭合的 {{，如 {{setvar::x::
+            .replace(/<\|?[^<>\n]{1,40}\|?>/g, ' ')
+            .replace(/[【「『\[{][^【「『\]}\n]{1,40}[】」』\]}]/g, ' ');
+        if (WRAP_CUE_PATTERN.test(prose) && THINKING_PATTERN.test(prose)) {
             return line;
         }
     }
@@ -371,10 +426,14 @@ export function isApplicable(candidate, mode = 'safe') {
 /**
  * 从预设文本里推断思维链前后缀。
  *
- * 优先在「思维链条目」里选；只有在思维链条目里找不到任何候选时，才退回全局候选。
+ * 安全模式（默认）**只读思维链条目**，分两级：
+ *   1. 条目名 / 标识符含 思维链/思考/推理/CoT/think… 的条目（最可信）
+ *   2. 没有第 1 级时，退而用「内容里明确写了『把思考包在 X 里』」的条目
+ * 「反思维链」条目（卡原生思维链 / 禁用 / 收尾型预填充，作用是掐掉模型原生思维链）整个排除。
+ * 宽松模式才看全量候选（可能选到 `_format` 外壳、状态栏标签，仅供排查）。
  * @param {{source?: string, text?: string, name?: string, identifier?: string, enabled?: boolean}[]} chunks
  * @param {{mode?: 'safe'|'aggressive', limit?: number}} [options]
- * @returns {{candidates: object[], best: object|null, cotCandidateCount: number}}
+ * @returns {{candidates: object[], ignoredCandidates: object[], ignoredCount: number, best: object|null, cotCandidateCount: number, pool: 'named-cot'|'instruction'|'all'|'empty'}}
  */
 export function detectReasoningTags(chunks, { mode = 'safe', limit = 10 } = {}) {
     const list = Array.isArray(chunks) ? chunks : [];
@@ -384,12 +443,12 @@ export function detectReasoningTags(chunks, { mode = 'safe', limit = 10 } = {}) 
     const seen = new Set();
 
     for (const openToken of tokens) {
-        if (openToken.kind !== 'open') {
+        if (openToken.kind !== 'open' || onlyInAntiChunks(openToken, chunkMeta)) {
             continue;
         }
 
-        const openChunks = [...openToken.presences.keys()];
-        const cotEntry = openChunks.some(index => chunkMeta[index]?.cot);
+        const openChunks = [...openToken.presences.keys()].filter(index => !chunkMeta[index]?.anti);
+        const cotEntry = inCotChunk(openToken, chunkMeta);
         const enabledEntry = openChunks.some(index => chunkMeta[index]?.enabled === true);
         const disabledOnly = openChunks.length > 0 && openChunks.every(index => chunkMeta[index]?.enabled === false);
         const sources = [...new Set(openChunks.map(index => chunkMeta[index]?.source || chunkMeta[index]?.name).filter(Boolean))].slice(0, 3);
@@ -424,10 +483,10 @@ export function detectReasoningTags(chunks, { mode = 'safe', limit = 10 } = {}) 
             candidates.push(candidate);
         };
 
-        if (symmetricToken) {
+        if (symmetricToken && !onlyInAntiChunks(symmetricToken, chunkMeta)) {
             add(symmetricToken.text, 'symmetric');
         } else if (keyword) {
-            const keywordClose = findKeywordClose(openToken, tokens);
+            const keywordClose = findKeywordClose(openToken, tokens, chunkMeta);
             if (keywordClose) {
                 add(keywordClose.text, 'keyword');
             } else if (SYNTHESIZABLE_STYLES.has(openToken.style)) {
@@ -438,12 +497,36 @@ export function detectReasoningTags(chunks, { mode = 'safe', limit = 10 } = {}) 
 
     candidates.sort((a, b) => b.score - a.score || a.tagName.length - b.tagName.length || b.count - a.count);
 
-    // 思维链条目优先：这类条目里只要有候选，就只在其中挑
-    const cotCandidates = candidates.filter(candidate => candidate.cotEntry);
-    const pool = cotCandidates.length > 0 ? cotCandidates : candidates;
+    // 安全模式：先只认「思维链条目」，没有才退到「内容里写明包裹方式」的条目
+    const namedCot = candidates.filter(candidate => candidate.cotEntry);
+    const instructed = candidates.filter(candidate => !candidate.cotEntry && candidate.instruction);
+    let pool = candidates;
+    let poolKind = 'all';
+    if (mode !== 'aggressive') {
+        if (namedCot.length > 0) {
+            pool = namedCot;
+            poolKind = 'named-cot';
+        } else if (instructed.length > 0) {
+            pool = instructed;
+            poolKind = 'instruction';
+        } else {
+            pool = [];
+            poolKind = 'empty';
+        }
+    }
+
+    const poolSet = new Set(pool);
+    const ignoredCandidates = candidates.filter(candidate => !poolSet.has(candidate));
     const best = pool.find(candidate => isApplicable(candidate, mode)) ?? null;
 
-    return { candidates: candidates.slice(0, limit), best, cotCandidateCount: cotCandidates.length };
+    return {
+        candidates: pool.slice(0, limit),
+        ignoredCandidates: ignoredCandidates.slice(0, limit),
+        ignoredCount: ignoredCandidates.length,
+        best,
+        cotCandidateCount: namedCot.length,
+        pool: poolKind,
+    };
 }
 
 /**

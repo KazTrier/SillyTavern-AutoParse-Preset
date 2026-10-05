@@ -144,10 +144,10 @@ test('扩展从自身 URL 推出 third-party/<文件夹名> 并渲染 settings.h
     assert.equal($('#extensions_settings2 #raps_settings').length, 1);
 });
 
-test('首次运行写入默认设置：启用、通知开、fallback=keep、含一条停用的示例规则', () => {
+test('首次运行写入默认设置：启用、默认不弹窗、fallback=keep、含一条停用的示例规则', () => {
     assert.ok(settings());
     assert.equal(settings().enabled, true);
-    assert.equal(settings().notify, true);
+    assert.equal(settings().notify, false);
     assert.equal(settings().fallback, 'keep');
     assert.equal(settings().rules.length, 1);
     assert.equal(settings().rules[0].enabled, false);
@@ -191,7 +191,7 @@ test('切换预设命中规则 ⇒ 写入 power_user.reasoning 与 ST 界面控�
     assert.equal($('#reasoning_suffix').val(), THINK_CLOSE);
     assert.equal($('#reasoning_auto_parse').prop('checked'), true);
     assert.match(status(), /已按预设「DeepSeek V3\.1」更新/);
-    assert.equal(toasts.at(-1).title, 'Auto-Parse');
+    assert.equal(toasts.length, 0, '默认不弹窗');
 });
 
 test('规则命中但目标值一致时不重复写入', () => {
@@ -473,14 +473,15 @@ test('自动识别：预设写明 wrapped in `<thought></thought>` tag → 自�
     assert.equal(power_user.reasoning.suffix, '</thought>');
     assert.equal(power_user.reasoning.auto_parse, true);
     assert.equal($('#reasoning_prefix').val(), '<thought>');
-    assert.match(status(), /自动识别/);
+    assert.match(status(), /从思维链条目识别/);
 });
 
-test('自动识别：候选与依据显示在报告面板里', () => {
+test('报告面板列出候选，并提示忽略了多少非思维链条目标签', () => {
     const report = $('#raps_detect_report').text();
     assert.match(report, /thought/);
     assert.match(report, /已采用/);
-    assert.match(report, /wrapped in/);
+    assert.match(report, /只读思维链条目/);
+    assert.match(report, /忽略/);
 });
 
 test('手动规则优先于自动识别', () => {
@@ -508,7 +509,7 @@ test('自动识别：预设里只有结构性标签时保持原值不动', () =>
     ]);
     assert.equal(power_user.reasoning.prefix, '<sentinel-prefix>');
     assert.equal(power_user.reasoning.suffix, '<sentinel-suffix>');
-    assert.match(status(), /也没有从预设里识别出/);
+    assert.match(status(), /也没在思维链条目里找到/);
 });
 
 test('关闭自动识别后，即使预设里能识别出标签也不动设置', () => {
@@ -558,7 +559,7 @@ test('识别模式：安全模式不采用普通成对标签，宽松模式才�
     power_user.reasoning.prefix = '<sentinel-prefix>';
     setCurrentPreset('Eva v1', [{ identifier: 'x', name: 'X', content: '<extra_info>note</extra_info>' }]);
     assert.equal(power_user.reasoning.prefix, '<sentinel-prefix>');
-    assert.match(status(), /也没有从预设里识别出/);
+    assert.match(status(), /也没在思维链条目里找到/);
 });
 
 test('模式下拉切换会重新识别', () => {
@@ -613,15 +614,27 @@ test('自动识别：优先读思维链条目，忽略变量名与格式外壳',
     assert.equal(power_user.reasoning.prefix, '<think>');
     assert.equal(power_user.reasoning.suffix, '</think>');
     assert.doesNotMatch(power_user.reasoning.prefix, /format|\{\{/);
-    assert.match(status(), /自动识别/);
+    assert.match(status(), /从思维链条目识别/);
     const report = $('#raps_detect_report').text();
     assert.match(report, /思维链条目/);
     assert.doesNotMatch(report, /setvar/);
 });
 
-test('自动识别不会采用 `_format` 外壳名', () => {
+test('安全模式下没有思维链条目就不动设置；宽松模式才看全量候选（且不选 `_format` 外壳）', () => {
     resetExtensionSettings();
     oai_settings.prompt_order = undefined;
+    power_user.reasoning.prefix = '<sentinel-prefix>';
+    setCurrentPreset('只有外壳的预设', [
+        {
+            identifier: 'acg',
+            name: '🎭acg角色心理模型',
+            content: '{{setvar::acg_think_format::\n<acg_think_format>\n<acg_think>...</acg_think>\n</acg_think_format>\n}}',
+        },
+    ]);
+    assert.equal(power_user.reasoning.prefix, '<sentinel-prefix>', '安全模式应保持不动');
+
+    resetExtensionSettings({ detectMode: 'aggressive' });
+    power_user.reasoning.prefix = '<sentinel-prefix>';
     setCurrentPreset('只有外壳的预设', [
         {
             identifier: 'acg',
@@ -633,7 +646,7 @@ test('自动识别不会采用 `_format` 外壳名', () => {
     assert.equal(power_user.reasoning.suffix, '</acg_think>');
 });
 
-test('报告面板的「采用这组」按索引套用指定候选', () => {
+test('报告面板的「采用这组」按索引套用指定候选，并把它固定成规则', () => {
     resetExtensionSettings();
     setCurrentPreset('多候选预设', [
         { identifier: 'a', name: '🧠思维链-主块', content: '<think>\n推理一\n</think>' },
@@ -644,13 +657,35 @@ test('报告面板的「采用这组」按索引套用指定候选', () => {
 
     const otherIndex = autoApplied === '<think>' ? 1 : 0;
     const $button = $(`#raps_detect_report .raps-adopt[data-index="${otherIndex}"]`);
-    assert.equal($button.length, 1, '应能找到另一条候选的「采用这组」按钮');
+    assert.equal($button.length, 1, '应能找到另一条候选的「采用」按钮');
     $button.trigger('click');
 
     assert.notEqual(power_user.reasoning.prefix, autoApplied);
     assert.ok(power_user.reasoning.prefix === '<think>' || power_user.reasoning.prefix === '<thinking>');
-    assert.match(status(), /自动识别/);
+    assert.match(status(), /已采用并记住/);
     assert.equal($('#reasoning_prefix').val(), power_user.reasoning.prefix);
+
+    const pinned = settings().rules.find(rule => rule.matchType === 'exact' && rule.pattern === '多候选预设');
+    assert.ok(pinned, '应写入一条按预设名精确匹配的规则');
+    assert.equal(pinned.prefix, power_user.reasoning.prefix);
+    assert.equal(pinned.enabled, true);
+});
+
+test('弹窗提醒默认关闭；打开后仅手动操作提醒，且同样的结果不重复提醒', () => {
+    resetExtensionSettings();
+    const baseline = toasts.length;
+    setCurrentPreset('提醒测试预设', [
+        { identifier: 'c', name: '🧠思维链-主块', content: '<story_driver>推理</story_driver>' },
+    ]);
+    assert.equal(toasts.length, baseline, '自动触发（切预设）不应弹窗');
+
+    $('#raps_notify').prop('checked', true).trigger('input');
+    assert.equal(settings().notify, true);
+    $('#raps_detect_now').trigger('click');
+    assert.equal(toasts.length, baseline + 1, '手动操作应提醒一次');
+
+    $('#raps_detect_now').trigger('click');
+    assert.equal(toasts.length, baseline + 1, '同样的结果不重复提醒');
 });
 
 /* ---------------- 汇总 ---------------- */

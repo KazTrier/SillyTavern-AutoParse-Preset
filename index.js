@@ -47,7 +47,7 @@ const EXTENSION_NAME = `third-party/${EXTENSION_FOLDER}`;
 
 const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
-    notify: true,
+    notify: false,
     fallback: 'keep',
     autodetect: true,
     detectMode: 'safe',
@@ -199,7 +199,7 @@ function syncNow(reason = 'manual') {
             return;
         }
         const tail = settings.autodetect
-            ? '也没有从预设里识别出思维链标签，保持当前设置不变。'
+            ? '也没在思维链条目里找到成对标签，保持当前设置不变。'
             : '，且自动识别已关闭，保持当前设置不变。';
         setStatus(`没有规则命中预设「${presetName}」，${tail}`);
         return;
@@ -226,7 +226,7 @@ function syncNow(reason = 'manual') {
     setStatus(`已按预设「${presetName}」更新：前缀 ${JSON.stringify(update.prefix)}，后缀 ${JSON.stringify(update.suffix)}，自动解析${update.auto_parse ? '开' : '关'}。`);
     console.debug(LOG, 'applied', { reason, presetName, update });
 
-    if (settings.notify && typeof toastr !== 'undefined') {
+    if (shouldNotify(reason, `${update.prefix}\u0000${update.suffix}\u0000${update.auto_parse}`)) {
         toastr.info(`自动解析前后缀已按预设「${presetName}」更新`, 'Auto-Parse');
     }
 }
@@ -327,25 +327,93 @@ function runDetection() {
     return result;
 }
 
+/**
+ * 这些触发来源是程序自动跑的，不弹窗（否则切聊天/加载设置时会刷屏）。
+ * 只有用户主动点按钮（manual-detect / manual-adopt / manual）才提醒。
+ */
+const QUIET_REASONS = new Set([
+    'startup', 'settings_loaded_after', 'app_ready', 'toggle', 'fallback',
+    'autodetect-toggle', 'detect-mode', 'chat_id_changed', 'oai_preset_changed_after',
+    'main_api_changed',
+]);
+
+/** 判断这次要不要弹窗：开关打开 + 非自动触发 + 和上次提醒过的结果不同 */
+function shouldNotify(reason, signature) {
+    const settings = getSettings();
+    if (!settings.notify || typeof toastr === 'undefined') {
+        return false;
+    }
+    if (QUIET_REASONS.has(String(reason))) {
+        return false;
+    }
+    if (settings.lastNotified === signature) {
+        return false;
+    }
+    settings.lastNotified = signature;
+    return true;
+}
+
+/**
+ * 把「预设名 → 前后缀」固定成一条精确匹配规则；已存在同名规则就地更新。
+ * 用户手动点「采用这组」时调用，这样以后再切回这个预设结果稳定。
+ */
+function pinRuleForPreset(presetName, candidate) {
+    const settings = getSettings();
+    const name = String(presetName);
+    const existing = settings.rules.find(rule =>
+        rule.matchType === MATCH_TYPES.EXACT && String(rule.pattern).toLowerCase() === name.toLowerCase());
+
+    if (existing) {
+        existing.enabled = true;
+        existing.autoParse = true;
+        existing.prefix = candidate.prefix;
+        existing.suffix = candidate.suffix;
+        existing.note = `手动采用：${candidate.tagName}`;
+        saveSettingsDebounced();
+        renderRules();
+        return existing;
+    }
+
+    const rule = createRule({
+        matchType: MATCH_TYPES.EXACT,
+        pattern: name,
+        autoParse: true,
+        prefix: candidate.prefix,
+        suffix: candidate.suffix,
+        note: `手动采用：${candidate.tagName}`,
+    });
+    settings.rules.push(rule);
+    saveSettingsDebounced();
+    renderRules();
+    return rule;
+}
+
 /** 把识别结果套用到 ST 的推理设置 */
 function applyDetected(candidate, presetName, reason) {
     applyToPowerUser({ auto_parse: true, prefix: candidate.prefix, suffix: candidate.suffix });
 
     const settings = getSettings();
+    const signature = `${candidate.prefix}\u0000${candidate.suffix}\u0000true`;
     settings.lastApplied = {
         preset: presetName,
-        source: 'detected',
+        source: reason === 'manual-adopt' ? 'manual' : 'detected',
         tag: candidate.tagName,
         at: new Date().toISOString(),
         reason,
+        signature,
     };
     saveSettingsDebounced();
 
-    setStatus(`已按预设「${presetName}」自动识别：前缀 ${JSON.stringify(candidate.prefix)}，后缀 ${JSON.stringify(candidate.suffix)}（${describeCandidate(candidate)}）`);
+    if (reason === 'manual-adopt') {
+        pinRuleForPreset(presetName, candidate);
+        setStatus(`已采用并记住：预设「${presetName}」→ 前缀 ${JSON.stringify(candidate.prefix)}，后缀 ${JSON.stringify(candidate.suffix)}（已写入规则表，以后切回这个预设都用它）`);
+    } else {
+        setStatus(`已按预设「${presetName}」从思维链条目识别：前缀 ${JSON.stringify(candidate.prefix)}，后缀 ${JSON.stringify(candidate.suffix)}（${describeCandidate(candidate)}）`);
+    }
     console.debug(LOG, 'detected & applied', { reason, presetName, tag: candidate.tagName, score: candidate.score });
 
-    if (settings.notify && typeof toastr !== 'undefined') {
-        toastr.info(`已从预设「${presetName}」识别出思维链标签 ${candidate.tagName}`, 'Auto-Parse');
+    if (shouldNotify(reason, signature)) {
+        toastr.info(`自动解析前后缀已更新：${candidate.prefix} … ${candidate.suffix}`, 'Auto-Parse');
     }
 }
 
@@ -363,39 +431,46 @@ function renderDetectReport(result) {
     }
 
     $report.append($('<div class="raps-dim"></div>').text(
-        `预设「${result.presetName || '未知'}」｜扫描 ${result.chunkCount} 段文本｜模式：${result.mode === 'aggressive' ? '宽松' : '安全'}`,
+        `预设「${result.presetName || '未知'}」｜模式：${result.mode === 'aggressive' ? '宽松（任意标签）' : '安全（只读思维链条目）'}`,
     ));
 
     if (result.candidates.length === 0) {
-        $report.append($('<div></div>').text('没有在预设文本里找到任何成对标签。'));
+        $report.append($('<div></div>').text(
+            result.mode === 'aggressive'
+                ? '预设里没有找到成对标签。'
+                : '预设里没有「思维链条目」（条目名含 思维链/思考/推理/CoT/think…），或其中没有成对标签 —— 不会改动你的设置。',
+        ));
         return;
     }
 
     result.candidates.slice(0, 5).forEach((candidate, index) => {
         const adopted = result.best === candidate;
-        const tags = [
-            candidate.cotEntry ? '［思维链条目］' : '',
-            candidate.enabledEntry ? '［已启用］' : (candidate.disabledOnly ? '［未启用］' : ''),
-        ].filter(Boolean).join('');
         const $row = $('<div class="raps-cand"></div>');
-        $row.append($('<div class="raps-cand-title"></div>').text(
-            `${index === 0 ? '★ ' : ''}${candidate.tagName}${tags}　${JSON.stringify(candidate.prefix)} … ${JSON.stringify(candidate.suffix)}${adopted ? '　（已采用）' : ''}`,
-        ));
-        $row.append($('<div class="raps-cand-sub"></div>').text(describeCandidate(candidate)));
-        if (Array.isArray(candidate.sources) && candidate.sources.length > 0) {
-            $row.append($('<div class="raps-cand-sub"></div>').text(`来源：${candidate.sources.join('、')}`));
-        }
-        if (candidate.evidence) {
-            $row.append($('<div class="raps-cand-sub raps-cand-evidence"></div>').text(`依据：${candidate.evidence}`));
-        }
-        const $actions = $('<div class="raps-cand-actions"></div>').appendTo($row);
+
+        const $head = $('<div class="raps-cand-head"></div>').appendTo($row);
+        $('<span class="raps-cand-title"></span>').text(
+            `${adopted ? '★ ' : ''}${candidate.tagName}${candidate.disabledOnly ? '［未启用］' : ''}`,
+        ).appendTo($head);
+        $('<span class="raps-cand-tags"></span>').text(
+            `${JSON.stringify(candidate.prefix)} … ${JSON.stringify(candidate.suffix)}`,
+        ).appendTo($head);
         $('<div class="menu_button raps-adopt"></div>')
             .attr('data-index', index)
-            .attr('title', '直接把这组前后缀写入 ST 的自动解析设置')
-            .text('采用这组')
-            .appendTo($actions);
+            .attr('title', '写入 ST 的自动解析设置，并记住这个预设用它')
+            .text(adopted ? '已采用' : '采用')
+            .appendTo($head);
+
+        $row.append($('<div class="raps-cand-sub"></div>').text(
+            `${candidate.score} 分｜${candidate.pairing === 'symmetric' ? '开闭成对' : (candidate.pairing === 'keyword' ? '关键词配对' : '仅见开标记')}｜来源：${(candidate.sources ?? []).join('、') || '—'}`,
+        ));
         $report.append($row);
     });
+
+    if (result.ignoredCount > 0) {
+        $report.append($('<div class="raps-dim"></div>').text(
+            `另有 ${result.ignoredCount} 个非思维链条目的标签已忽略（切「宽松」模式可查看）`,
+        ));
+    }
 }
 
 /** 报告面板里的「采用这组」：对指定候选直接套用 */
