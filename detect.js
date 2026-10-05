@@ -328,7 +328,7 @@ function scoreCandidate(candidate) {
         score -= 80;
     }
     if (FORMAT_SHELL_PATTERN.test(candidate.tagName)) {
-        score -= 60;
+        score -= 120;
     }
     if (candidate.tagName.length > 16) {
         score -= 10;
