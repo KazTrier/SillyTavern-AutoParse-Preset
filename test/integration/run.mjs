@@ -144,17 +144,20 @@ test('扩展从自身 URL 推出 third-party/<文件夹名> 并渲染 settings.h
     assert.equal($('#extensions_settings2 #raps_settings').length, 1);
 });
 
-test('首次运行写入默认设置：启用、默认不弹窗、fallback=keep、含一条停用的示例规则', () => {
+test('首次运行写入默认设置：启用、自动解析开、自动识别开、含一条停用的示例规则', () => {
     assert.ok(settings());
     assert.equal(settings().enabled, true);
-    assert.equal(settings().notify, false);
-    assert.equal(settings().fallback, 'keep');
+    assert.equal(settings().autoParse, true);
+    assert.equal(settings().autodetect, true);
     assert.equal(settings().rules.length, 1);
     assert.equal(settings().rules[0].enabled, false);
 });
 
 test('面板渲染出示例规则行，并绑定全部设置事件', () => {
     assert.equal(rows().length, 1);
+    assert.equal($('#raps_enabled').length, 1);
+    assert.equal($('#raps_auto_parse').length, 1);
+    assert.equal($('#raps_autodetect').length, 1);
     for (const type of [event_types.OAI_PRESET_CHANGED_AFTER, event_types.CHAT_CHANGED, event_types.MAIN_API_CHANGED, event_types.SETTINGS_LOADED_AFTER, event_types.APP_READY]) {
         assert.equal(eventSource.listenerCount(type), 1, `${type} 未绑定`);
     }
@@ -169,15 +172,18 @@ test('启动时示例规则停用 + 无其它规则 ⇒ 不改动 ST 的推理�
 
 /* ---------------- 2. 新增规则 + 切预设自动套用 ---------------- */
 
-test('点「＋ 新增规则」按所选模板预填前后缀，并展开编辑区', () => {
-    $('#raps_tpl_select').val('think-xml');
+test('点「＋」新增一条空规则并展开编辑区', () => {
     $('#raps_add_rule').trigger('click');
     assert.equal(settings().rules.length, 2);
     const rule = settings().rules[1];
-    assert.equal(rule.prefix, THINK_OPEN);
-    assert.equal(rule.suffix, THINK_CLOSE);
-    assert.equal(rule.separator, '\n');
+    assert.equal(rule.pattern, '');
+    assert.equal(rule.prefix, '');
     assert.equal(rowOf(1).find('.raps-rule-editor').prop('hidden'), false);
+    // 手动补上前后缀（相当于用户自己填）
+    setField(1, 'prefix', THINK_OPEN);
+    setField(1, 'suffix', THINK_CLOSE);
+    assert.equal(settings().rules[1].prefix, THINK_OPEN);
+    assert.equal(settings().rules[1].suffix, THINK_CLOSE);
 });
 
 test('切换预设命中规则 ⇒ 写入 power_user.reasoning 与 ST 界面控件', () => {
@@ -277,19 +283,14 @@ test('只切自动解析开关：关掉时保留已有前后缀', () => {
     assert.equal(power_user.reasoning.suffix, '<END>');
 });
 
-test('fallback=disable：没有规则命中时关闭自动解析', () => {
+test('都没命中时保持当前设置不变（不再有 fallback 选项）', () => {
     setField(1, 'autoParse', true);
     switchPreset('DeepSeek V3.1');
     assert.equal(power_user.reasoning.auto_parse, true);
     switchPreset('NoMatchPreset');
-    assert.equal(power_user.reasoning.auto_parse, true, 'fallback=keep 时不应改动');
-
-    $('#raps_fallback').val('disable').trigger('change');
-    assert.equal(settings().fallback, 'disable');
-    assert.equal(power_user.reasoning.auto_parse, false);
-    assert.match(status(), /已按设置关闭自动解析/);
-    $('#raps_fallback').val('keep').trigger('change');
-    assert.equal(settings().fallback, 'keep');
+    assert.equal(power_user.reasoning.auto_parse, true);
+    assert.equal(power_user.reasoning.prefix, THINK_OPEN, '不命中时不改动前缀');
+    assert.match(status(), /保持当前设置不变/);
 });
 
 /* ---------------- 5. 主 API 与总开关 ---------------- */
@@ -363,69 +364,38 @@ test('删除规则后行数与数据同步', () => {
     assert.equal(rows().length, before - 1);
 });
 
-/* ---------------- 7. 导入导出 ---------------- */
+/* ---------------- 7. 手动规则（无导入导出，规则来自自动生成或手填） ---------------- */
 
-test('导出到文本框并写入合法 JSON，导入可往返', () => {
-    $('#raps_export').trigger('click');
-    const text = $('#raps_io_text').val();
-    assert.ok(text.includes('"rules"'));
-    const parsed = JSON.parse(text);
-    assert.equal(parsed.rules.length, settings().rules.length);
-
-    parsed.rules[1].pattern = 'GLM-4.6';
-    parsed.rules[1].prefix = '<glm>';
-    $('#raps_io_text').val(JSON.stringify(parsed));
-    $('#raps_import').trigger('click');
-
-    assert.equal(settings().rules.length, parsed.rules.length);
-    assert.match(status(), /已导入/);
+test('手动把规则改成正则匹配也能生效', () => {
+    setField(1, 'matchType', 'regex', 'change');
+    setField(1, 'pattern', '^GLM-.*$');
+    setField(1, 'prefix', '<glm>');
+    setField(1, 'suffix', '</glm>');
     switchPreset('GLM-4.6');
     assert.equal(power_user.reasoning.prefix, '<glm>');
+    assert.equal(power_user.reasoning.suffix, '</glm>');
+    // 还原，避免影响后续用例
+    setField(1, 'matchType', 'contains', 'change');
+    setField(1, 'pattern', 'DeepSeek');
+    setField(1, 'prefix', '');
+    setField(1, 'suffix', '');
 });
 
-test('导入非法 JSON 时给出错误提示且不破坏现有规则', () => {
-    const before = settings().rules.map(rule => rule.id);
-    $('#raps_io_text').val('{not json');
-    $('#raps_import').trigger('click');
-    assert.match(status(), /导入失败/);
-    assert.deepEqual(settings().rules.map(rule => rule.id), before);
-    assert.equal(toasts.at(-1).level, 'error');
-});
-
-/* ---------------- 8. 模板快捷填充 / 恢复默认 ---------------- */
-
-test('标签模板下拉可覆盖某条规则的前后缀', () => {
-    $('#raps_tpl_select').val('analysis-xml');
-    $('#raps_add_rule').trigger('click');
-    const index = settings().rules.length - 1;
-    assert.equal(fieldOf(index, 'prefix').val(), '<analysis>');
-
-    rowOf(index).find('.raps-tpl-fill').val('thought-xml').trigger('change');
-    assert.equal(settings().rules[index].prefix, '<thought>');
-    assert.equal(fieldOf(index, 'prefix').val(), '<thought>');
-    assert.equal(fieldOf(index, 'suffix').val(), '</thought>');
-});
-
-test('恢复默认：清空规则、复位开关并重绘面板', () => {
-    $('#raps_reset').trigger('click');
-    assert.equal(settings().rules.length, 1);
-    assert.equal(settings().rules[0].enabled, false);
-    assert.equal(rows().length, 1);
-    assert.equal($('#raps_enabled').prop('checked'), true);
-});
+/* ---------------- 8. 设置加载后重建 ---------------- */
 
 test('设置真正加载完成后（SETTINGS_LOADED_AFTER）会按已保存设置重建面板', () => {
     // 模拟 ST 载入用户设置：把规则换成一条命中 DeepSeek 的规则
     extension_settings[SETTINGS_KEY] = {
         enabled: true,
-        notify: false,
-        fallback: 'keep',
+        autoParse: true,
+        autodetect: true,
         rules: [{ id: 'r1', enabled: true, matchType: 'contains', pattern: 'DeepSeek', autoParse: true, prefix: '<loaded>', suffix: '</loaded>', separator: '\n', note: '' }],
     };
     presetState.selected = 'DeepSeek V3.1';
     eventSource.emit(event_types.SETTINGS_LOADED_AFTER);
     assert.equal(rows().length, 1);
-    assert.equal($('#raps_notify').prop('checked'), false);
+    assert.equal($('#raps_enabled').prop('checked'), true);
+    assert.equal($('#raps_autodetect').prop('checked'), true);
     assert.equal(power_user.reasoning.prefix, '<loaded>');
 });
 
@@ -451,10 +421,7 @@ function resetExtensionSettings(overrides = {}) {
     extension_settings[SETTINGS_KEY] = {
         enabled: true,
         autoParse: true,
-        notify: false,
-        fallback: 'keep',
         autodetect: true,
-        detectMode: 'safe',
         extraText: '',
         rules: [],
         lastApplied: null,
@@ -531,56 +498,25 @@ test('重新打开自动识别开关会立刻套用识别结果', () => {
     assert.equal(power_user.reasoning.suffix, '</thought>');
 });
 
-test('「重新识别」按钮会重新套用识别结果', () => {
+test('「立即应用」会按当前预设重新套用识别结果', () => {
     power_user.reasoning.prefix = '<changed-manually>';
-    $('#raps_detect_now').trigger('click');
+    $('#raps_apply_now').trigger('click');
     assert.equal(power_user.reasoning.prefix, '<thought>');
 });
 
-test('「固化为规则」按预设名写出一条精确匹配规则', () => {
-    const before = settings().rules.length;
-    $('#raps_detect_to_rule').trigger('click');
-    const rules = settings().rules;
-    assert.equal(rules.length, before + 1);
-    const rule = rules[rules.length - 1];
-    assert.equal(rule.matchType, 'exact');
-    assert.equal(rule.pattern, 'DeepSeek V3.1');
-    assert.equal(rule.prefix, '<thought>');
-    assert.equal(rule.suffix, '</thought>');
-    assert.match(rule.note, /自动识别/);
-    assert.equal(rows().length, before + 1);
-});
-
-test('识别模式：安全模式不采用普通成对标签，宽松模式才采用', () => {
-    resetExtensionSettings({ detectMode: 'aggressive' });
-    setCurrentPreset('Eva v1', [{ identifier: 'x', name: 'X', content: '<extra_info>note</extra_info>' }]);
-    assert.equal(power_user.reasoning.prefix, '<extra_info>');
-
-    resetExtensionSettings({ detectMode: 'safe' });
+test('自动识别不会采用普通成对标签（非思维链条目一律不动）', () => {
+    resetExtensionSettings();
     power_user.reasoning.prefix = '<sentinel-prefix>';
     setCurrentPreset('Eva v1', [{ identifier: 'x', name: 'X', content: '<extra_info>note</extra_info>' }]);
     assert.equal(power_user.reasoning.prefix, '<sentinel-prefix>');
     assert.match(status(), /也没在思维链条目里找到/);
 });
 
-test('模式下拉切换会重新识别', () => {
-    $('#raps_detect_mode').val('aggressive').trigger('change');
-    assert.equal(settings().detectMode, 'aggressive');
-    assert.equal(power_user.reasoning.prefix, '<extra_info>');
-    $('#raps_detect_mode').val('safe').trigger('change');
-    assert.equal(settings().detectMode, 'safe');
-});
-
-test('补充文本里的格式说明也参与识别', () => {
+test('补充文本（手写在设置里）也参与识别', () => {
     resetExtensionSettings({ extraText: '把思考写在 <inner_voice></inner_voice> 之间，正文另起一行。' });
     setCurrentPreset('Some Preset', [{ identifier: 'main', name: 'Main', content: 'Write the reply.' }]);
     assert.equal(power_user.reasoning.prefix, '<inner_voice>');
     assert.equal(power_user.reasoning.suffix, '</inner_voice>');
-});
-
-test('补充文本框改动会保存进设置', () => {
-    $('#raps_extra_text').val('思考用 <zzz></zzz> 包裹').trigger('input');
-    assert.equal(settings().extraText, '思考用 <zzz></zzz> 包裹');
 });
 
 test('预设内容读取失败时不抛异常，退化为不改动设置', () => {
@@ -621,7 +557,7 @@ test('自动识别：优先读思维链条目，忽略变量名与格式外壳',
     assert.doesNotMatch(report, /setvar/);
 });
 
-test('安全模式下没有思维链条目就不动设置；宽松模式才看全量候选（且不选 `_format` 外壳）', () => {
+test('没有思维链条目就不动设置（不会因为格式外壳改东西）', () => {
     resetExtensionSettings();
     oai_settings.prompt_order = undefined;
     power_user.reasoning.prefix = '<sentinel-prefix>';
@@ -632,22 +568,11 @@ test('安全模式下没有思维链条目就不动设置；宽松模式才看�
             content: '{{setvar::acg_think_format::\n<acg_think_format>\n<acg_think>...</acg_think>\n</acg_think_format>\n}}',
         },
     ]);
-    assert.equal(power_user.reasoning.prefix, '<sentinel-prefix>', '安全模式应保持不动');
-
-    resetExtensionSettings({ detectMode: 'aggressive' });
-    power_user.reasoning.prefix = '<sentinel-prefix>';
-    setCurrentPreset('只有外壳的预设', [
-        {
-            identifier: 'acg',
-            name: '🎭acg角色心理模型',
-            content: '{{setvar::acg_think_format::\n<acg_think_format>\n<acg_think>...</acg_think>\n</acg_think_format>\n}}',
-        },
-    ]);
-    assert.equal(power_user.reasoning.prefix, '<acg_think>');
-    assert.equal(power_user.reasoning.suffix, '</acg_think>');
+    assert.equal(power_user.reasoning.prefix, '<sentinel-prefix>');
+    assert.doesNotMatch(power_user.reasoning.prefix, /format|\{\{/);
 });
 
-test('报告面板的「采用这组」按索引套用指定候选，并把它固定成规则', () => {
+test('报告面板的「采用」按索引套用指定候选，并把它固定成规则', () => {
     resetExtensionSettings();
     setCurrentPreset('多候选预设', [
         { identifier: 'a', name: '🧠思维链-主块', content: '<think>\n推理一\n</think>' },
@@ -672,21 +597,16 @@ test('报告面板的「采用这组」按索引套用指定候选，并把它�
     assert.equal(pinned.enabled, true);
 });
 
-test('弹窗提醒默认关闭；打开后仅手动操作提醒，且同样的结果不重复提醒', () => {
+test('不再有任何弹窗提醒（toasts 始终为空）', () => {
     resetExtensionSettings();
     const baseline = toasts.length;
     setCurrentPreset('提醒测试预设', [
         { identifier: 'c', name: '🧠思维链-主块', content: '<story_driver>推理</story_driver>' },
     ]);
-    assert.equal(toasts.length, baseline, '自动触发（切预设）不应弹窗');
-
-    $('#raps_notify').prop('checked', true).trigger('input');
-    assert.equal(settings().notify, true);
-    $('#raps_detect_now').trigger('click');
-    assert.equal(toasts.length, baseline + 1, '手动操作应提醒一次');
-
-    $('#raps_detect_now').trigger('click');
-    assert.equal(toasts.length, baseline + 1, '同样的结果不重复提醒');
+    $('#raps_apply_now').trigger('click');
+    $('#raps_auto_parse').prop('checked', false).trigger('input');
+    $('#raps_auto_parse').prop('checked', true).trigger('input');
+    assert.equal(toasts.length, baseline);
 });
 
 test('「自动解析」开关直接控制 ST 的自动解析状态，并被后续同步沿用', () => {

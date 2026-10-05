@@ -76,6 +76,24 @@
     font-size: calc(var(--mainFontSize) * 0.95);
 }
 
+.raps-settings .raps-rules-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 0 4px;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    opacity: 0.9;
+}
+
+.raps-settings .raps-rules-head > span {
+    flex: 1;
+}
+
+.raps-settings .raps-rules-head .menu_button {
+    padding: 0 8px;
+    margin: 0;
+}
+
 .raps-settings .raps-row-main {
     flex-wrap: wrap;
 }

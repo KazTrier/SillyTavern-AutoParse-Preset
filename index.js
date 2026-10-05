@@ -24,13 +24,10 @@ import { collectPresetTexts, describeCandidate, detectReasoningTags } from './de
 import {
     MATCH_TYPES,
     MATCH_TYPE_LIST,
-    TAG_TEMPLATES,
     createDefaultRules,
     createRule,
     describeRule,
-    exportRules,
     findMatchingRule,
-    importRules,
     normalizeRules,
     resolveReasoningUpdate,
     validateRule,
@@ -48,11 +45,7 @@ const EXTENSION_NAME = `third-party/${EXTENSION_FOLDER}`;
 const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
     autoParse: true,
-    notify: false,
-    fallback: 'keep',
     autodetect: true,
-    detectMode: 'safe',
-    extraText: '',
 });
 
 /* ------------------------------------------------------------------ *
@@ -71,18 +64,10 @@ function getSettings() {
     if (typeof settings.autoParse !== 'boolean') {
         settings.autoParse = DEFAULT_SETTINGS.autoParse;
     }
-    if (typeof settings.notify !== 'boolean') {
-        settings.notify = DEFAULT_SETTINGS.notify;
-    }
-    if (settings.fallback !== 'disable') {
-        settings.fallback = 'keep';
-    }
     if (typeof settings.autodetect !== 'boolean') {
         settings.autodetect = DEFAULT_SETTINGS.autodetect;
     }
-    if (settings.detectMode !== 'aggressive') {
-        settings.detectMode = 'safe';
-    }
+    // 兼容旧配置里手写的「补充文本」（无界面，但存在就继续用）
     if (typeof settings.extraText !== 'string') {
         settings.extraText = '';
     }
@@ -201,12 +186,6 @@ function syncNow(reason = 'manual') {
     }
 
     if (!rule) {
-        if (settings.fallback === 'disable' && power_user?.reasoning?.auto_parse) {
-            applyToPowerUser({ auto_parse: false });
-            setStatus(`没有规则命中预设「${presetName}」，也没识别出思维链标签，已按设置关闭自动解析。`);
-            console.debug(LOG, 'fallback disable', reason, presetName);
-            return;
-        }
         const tail = settings.autodetect
             ? '也没在思维链条目里找到成对标签，保持当前设置不变。'
             : '，且自动识别已关闭，保持当前设置不变。';
@@ -237,10 +216,6 @@ function syncNow(reason = 'manual') {
 
     setStatus(`已按预设「${presetName}」更新：前缀 ${JSON.stringify(update.prefix)}，后缀 ${JSON.stringify(update.suffix)}，自动解析${update.auto_parse ? '开' : '关'}。`);
     console.debug(LOG, 'applied', { reason, presetName, update });
-
-    if (shouldNotify(reason, `${update.prefix}\u0000${update.suffix}\u0000${update.auto_parse}`)) {
-        toastr.info(`自动解析前后缀已按预设「${presetName}」更新`, 'Auto-Parse');
-    }
 }
 
 /** 立即套用某条规则（面板里的「套用」按钮） */
@@ -254,9 +229,6 @@ function applySingleRule(rule) {
     const update = resolveReasoningUpdate(rule, current);
     applyToPowerUser(update);
     setStatus(`已手动套用规则：${describeRule(rule)}`);
-    if (getSettings().notify && typeof toastr !== 'undefined') {
-        toastr.info('已手动套用该规则', 'Auto-Parse');
-    }
 }
 
 /* ------------------------------------------------------------------ *
@@ -309,7 +281,7 @@ function getPresetCorpus() {
 /** 跑一次识别，刷新报告面板，并把结果记进设置 */
 function runDetection() {
     const { presetName, chunks } = getPresetCorpus();
-    const mode = getSettings().detectMode === 'aggressive' ? 'aggressive' : 'safe';
+    const mode = 'safe';
     const result = { ...detectReasoningTags(chunks, { mode }), presetName, mode, chunkCount: chunks.length };
     lastDetection = result;
 
@@ -340,34 +312,8 @@ function runDetection() {
 }
 
 /**
- * 这些触发来源是程序自动跑的，不弹窗（否则切聊天/加载设置时会刷屏）。
- * 只有用户主动点按钮（manual-detect / manual-adopt / manual）才提醒。
- */
-const QUIET_REASONS = new Set([
-    'startup', 'settings_loaded_after', 'app_ready', 'toggle', 'fallback',
-    'autodetect-toggle', 'detect-mode', 'chat_id_changed', 'oai_preset_changed_after',
-    'main_api_changed',
-]);
-
-/** 判断这次要不要弹窗：开关打开 + 非自动触发 + 和上次提醒过的结果不同 */
-function shouldNotify(reason, signature) {
-    const settings = getSettings();
-    if (!settings.notify || typeof toastr === 'undefined') {
-        return false;
-    }
-    if (QUIET_REASONS.has(String(reason))) {
-        return false;
-    }
-    if (settings.lastNotified === signature) {
-        return false;
-    }
-    settings.lastNotified = signature;
-    return true;
-}
-
-/**
  * 把「预设名 → 前后缀」固定成一条精确匹配规则；已存在同名规则就地更新。
- * 用户手动点「采用这组」时调用，这样以后再切回这个预设结果稳定。
+ * 用户手动点「采用」时调用，这样以后再切回这个预设结果稳定。
  */
 function pinRuleForPreset(presetName, candidate) {
     const settings = getSettings();
@@ -424,13 +370,9 @@ function applyDetected(candidate, presetName, reason) {
         setStatus(`已按预设「${presetName}」从思维链条目识别：前缀 ${JSON.stringify(candidate.prefix)}，后缀 ${JSON.stringify(candidate.suffix)}（${describeCandidate(candidate)}）`);
     }
     console.debug(LOG, 'detected & applied', { reason, presetName, tag: candidate.tagName, score: candidate.score });
-
-    if (shouldNotify(reason, signature)) {
-        toastr.info(`自动解析前后缀已更新：${candidate.prefix} … ${candidate.suffix}`, 'Auto-Parse');
-    }
 }
 
-/** 报告面板：列出候选，便于用户确认或固化成规则 */
+/** 报告面板：列出候选，便于用户确认或换成另一组 */
 function renderDetectReport(result) {
     const $report = $('#raps_detect_report');
     if (!$report.length) {
@@ -444,14 +386,12 @@ function renderDetectReport(result) {
     }
 
     $report.append($('<div class="raps-dim"></div>').text(
-        `预设「${result.presetName || '未知'}」｜模式：${result.mode === 'aggressive' ? '宽松（任意标签）' : '安全（只读思维链条目）'}`,
+        `当前预设：${result.presetName || '未知'}（只读思维链条目）`,
     ));
 
     if (result.candidates.length === 0) {
         $report.append($('<div></div>').text(
-            result.mode === 'aggressive'
-                ? '预设里没有找到成对标签。'
-                : '预设里没有「思维链条目」（条目名含 思维链/思考/推理/CoT/think…），或其中没有成对标签 —— 不会改动你的设置。',
+            '预设里没有可用的思维链条目（条目名含 思维链/思考/推理/CoT/think…），或其中没有成对标签 —— 不会改动你的设置。',
         ));
         return;
     }
@@ -481,63 +421,20 @@ function renderDetectReport(result) {
 
     if (result.ignoredCount > 0) {
         $report.append($('<div class="raps-dim"></div>').text(
-            `另有 ${result.ignoredCount} 个非思维链条目的标签已忽略（切「宽松」模式可查看）`,
+            `另有 ${result.ignoredCount} 个非思维链条目的标签已忽略`,
         ));
     }
 }
 
-/** 报告面板里的「采用这组」：对指定候选直接套用 */
+/** 报告里的「采用」：对指定候选直接套用，并固定成规则 */
 function onAdoptCandidate(index) {
     const candidate = lastDetection?.candidates?.[index];
     if (!candidate) {
-        setStatus('这条候选已失效，请点「重新识别」。');
+        setStatus('这条候选已失效，请点「立即应用」重新识别。');
         return;
     }
     const presetName = lastDetection.presetName || getCurrentPresetName() || '（未知）';
     applyDetected(candidate, presetName, 'manual-adopt');
-}
-
-/** 「重新识别」按钮 */
-function onDetectNow() {
-    const result = runDetection();
-    const settings = getSettings();
-    if (!settings.autodetect) {
-        setStatus('已重新识别（自动识别当前关闭，只显示结果，不套用）。');
-        return;
-    }
-    if (result.best) {
-        applyDetected(result.best, result.presetName || getCurrentPresetName() || '（未知）', 'manual-detect');
-    } else {
-        setStatus(`未从预设「${result.presetName || '未知'}」识别出思维链标签，保持当前设置不变。`);
-    }
-}
-
-/** 「固化为规则」按钮：把识别结果写成一条按预设名精确匹配的规则 */
-function onDetectToRule() {
-    const detected = getSettings().lastDetected;
-    const best = detected?.best;
-    if (!best) {
-        setStatus('还没有可固化的识别结果，请先点「重新识别」。');
-        return;
-    }
-    const presetName = detected.preset || getCurrentPresetName();
-    if (!presetName) {
-        setStatus('无法确定当前预设名，固化失败。');
-        return;
-    }
-    const rule = createRule({
-        matchType: MATCH_TYPES.EXACT,
-        pattern: presetName,
-        autoParse: true,
-        prefix: best.prefix,
-        suffix: best.suffix,
-        note: `由自动识别生成（${best.tagName}，得分 ${best.score}）`,
-    });
-    getSettings().rules.push(rule);
-    saveSettingsDebounced();
-    renderRules();
-    expandRule(rule.id);
-    setStatus(`已固化为规则（预设名 = ${presetName}），可展开直接修改。`);
 }
 
 /* ------------------------------------------------------------------ *
@@ -567,11 +464,6 @@ function buildRuleElement(rule) {
     $('<div class="menu_button raps-action" data-action="delete" title="删除">✕</div>').appendTo($actions);
 
     const $editor = $('<div class="raps-rule-editor" hidden></div>').appendTo($rule);
-
-    // 标签模板快捷填充
-    const $tplSelect = $('<select class="text_pole raps-tpl-fill"></select>');
-    TAG_TEMPLATES.forEach(template => $tplSelect.append($('<option></option>').val(template.id).text(template.label)));
-    $editor.append(buildField('标签模板', $tplSelect));
 
     // 匹配方式
     const $matchSelect = $('<select class="text_pole" data-field="matchType"></select>');
@@ -645,11 +537,7 @@ function refreshStaticUi() {
     }
     $('#raps_enabled').prop('checked', settings.enabled);
     $('#raps_auto_parse').prop('checked', settings.autoParse !== false);
-    $('#raps_notify').prop('checked', settings.notify);
-    $('#raps_fallback').val(settings.fallback);
     $('#raps_autodetect').prop('checked', settings.autodetect);
-    $('#raps_detect_mode').val(settings.detectMode);
-    $('#raps_extra_text').val(settings.extraText ?? '');
 }
 
 function onFieldChange(event) {
@@ -662,26 +550,6 @@ function onFieldChange(event) {
     }
     const field = $element.attr('data-field');
     rule[field] = element.type === 'checkbox' ? $element.prop('checked') : $element.val();
-    saveSettingsDebounced();
-    refreshRuleCard($rule, rule);
-}
-
-function onTemplateFill(event) {
-    const template = TAG_TEMPLATES.find(item => item.id === $(event.currentTarget).val());
-    if (!template) {
-        return;
-    }
-    const $rule = $(event.currentTarget).closest('.raps-rule');
-    const rule = findRuleById($rule.attr('data-id'));
-    if (!rule) {
-        return;
-    }
-    rule.prefix = template.prefix;
-    rule.suffix = template.suffix;
-    rule.separator = template.separator;
-    $rule.find('[data-field="prefix"]').val(rule.prefix);
-    $rule.find('[data-field="suffix"]').val(rule.suffix);
-    $rule.find('[data-field="separator"]').val(rule.separator);
     saveSettingsDebounced();
     refreshRuleCard($rule, rule);
 }
@@ -750,58 +618,21 @@ function onActionClick(event) {
     }
 }
 
+/** 新建一条空规则（手动兜底用） */
 function onAddRule() {
     const settings = getSettings();
-    const template = TAG_TEMPLATES.find(item => item.id === $('#raps_tpl_select').val()) ?? TAG_TEMPLATES[0];
     const rule = createRule({
         matchType: MATCH_TYPES.CONTAINS,
         pattern: '',
         autoParse: true,
-        prefix: template.prefix,
-        suffix: template.suffix,
-        separator: template.separator,
+        prefix: '',
+        suffix: '',
+        separator: '',
     });
     settings.rules.push(rule);
     saveSettingsDebounced();
     renderRules();
     expandRule(rule.id);
-}
-
-async function onExport() {
-    const text = exportRules(getSettings().rules);
-    $('#raps_io_text').val(text);
-    try {
-        await navigator.clipboard.writeText(text);
-        setStatus('规则已导出到文本框，并复制到剪贴板。');
-    } catch {
-        setStatus('规则已导出到文本框（剪贴板不可用，请手动复制）。');
-    }
-}
-
-function onImport() {
-    try {
-        const rules = importRules($('#raps_io_text').val());
-        getSettings().rules = rules;
-        saveSettingsDebounced();
-        renderRules();
-        setStatus(`已导入 ${rules.length} 条规则。`);
-    } catch (error) {
-        setStatus(`导入失败：${error.message}`);
-        if (typeof toastr !== 'undefined') {
-            toastr.error(error.message, 'Auto-Parse 规则导入失败');
-        }
-    }
-}
-
-function onReset() {
-    if (!confirm('恢复默认设置？当前规则会被清空。')) {
-        return;
-    }
-    extension_settings[SETTINGS_KEY] = { ...DEFAULT_SETTINGS, rules: createDefaultRules(), lastApplied: null };
-    saveSettingsDebounced();
-    refreshStaticUi();
-    renderRules();
-    setStatus('已恢复默认设置（示例规则默认关闭）。');
 }
 
 function bindStaticUi() {
@@ -812,10 +643,6 @@ function bindStaticUi() {
         saveSettingsDebounced();
         syncNow('toggle');
     });
-    $('#raps_notify').on('input', function () {
-        getSettings().notify = $(this).prop('checked');
-        saveSettingsDebounced();
-    });
     $('#raps_auto_parse').on('input', function () {
         const on = $(this).prop('checked');
         getSettings().autoParse = on;
@@ -825,43 +652,20 @@ function bindStaticUi() {
             ? `已开启 ST 的自动解析。当前预设：${getCurrentPresetName() || '（未知）'}`
             : '已关闭 ST 的自动解析（前缀 / 后缀仍会跟随预设更新）。');
     });
-    $('#raps_fallback').on('change', function () {
-        getSettings().fallback = $(this).val() === 'disable' ? 'disable' : 'keep';
-        saveSettingsDebounced();
-        syncNow('fallback');
-    });
     $('#raps_autodetect').on('input', function () {
         getSettings().autodetect = $(this).prop('checked');
         saveSettingsDebounced();
         syncNow('autodetect-toggle');
     });
-    $('#raps_detect_mode').on('change', function () {
-        getSettings().detectMode = $(this).val() === 'aggressive' ? 'aggressive' : 'safe';
-        saveSettingsDebounced();
-        syncNow('detect-mode');
-    });
-    $('#raps_detect_now').on('click', onDetectNow);
-    $('#raps_detect_to_rule').on('click', onDetectToRule);
     $('#raps_detect_report').on('click', '.raps-adopt', function () {
         onAdoptCandidate(Number($(this).attr('data-index')));
     });
-    $('#raps_extra_text').on('input', function () {
-        getSettings().extraText = String($(this).val() ?? '');
-        saveSettingsDebounced();
-    });
-
-    const $tpl = $('#raps_tpl_select').empty();
-    TAG_TEMPLATES.forEach(template => $tpl.append($('<option></option>').val(template.id).text(template.label)));
 
     $('#raps_add_rule').on('click', onAddRule);
     $('#raps_apply_now').on('click', () => syncNow('manual'));
-    $('#raps_export').on('click', () => { void onExport(); });
-    $('#raps_import').on('click', onImport);
-    $('#raps_reset').on('click', onReset);
 
     $('#raps_rules')
         .on('input change', '[data-field]', onFieldChange)
-        .on('change', '.raps-tpl-fill', onTemplateFill)
         .on('click', '.raps-action', onActionClick);
 }
 
