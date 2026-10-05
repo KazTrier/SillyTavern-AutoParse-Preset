@@ -71,9 +71,12 @@ function getSettings() {
     if (typeof settings.extraText !== 'string') {
         settings.extraText = '';
     }
-    // 用户手动要求在「预设自带思维链美化正则」时也保持自动解析的预设名
+    // 用户手动指定的「这个预设固定开 / 固定关自动解析」
     if (!Array.isArray(settings.autoParseKeep)) {
         settings.autoParseKeep = [];
+    }
+    if (!Array.isArray(settings.autoParseOff)) {
+        settings.autoParseOff = [];
     }
     settings.rules = normalizeRules(settings.rules);
     return settings;
@@ -100,28 +103,52 @@ function getCurrentPresetName() {
     return String($('#settings_preset_openai').val() ?? '');
 }
 
-/**
- * 当前预设是否带了「自己处理思维链显示」的正则（美化 / 隐藏）。
- * 这类脚本需要消息里保留原始思维链文本，所以此时要暂停自动解析。
- */
+/** 当前预设有没有「自己处理思维链显示」的正则（美化 / 隐藏） */
 let autoParseSuppressed = false;
 
 /** 触发暂停的脚本名（用于状态栏提示） */
 let cotDisplayScripts = [];
 
-/** 面板上的「自动解析」总开关：扩展每次写入 auto_parse 都以此为准 */
-function wantAutoParse() {
-    return getSettings().autoParse !== false && !autoParseSuppressed;
+/** 按规则算出来的、当前预设应该处于的自动解析状态 */
+let autoParseWanted = true;
+
+/**
+ * 自动解析的开关规则（全自动，无需手动）：
+ *   1. 用户在面板上手动点过这个预设 → 以手动为准（keep = 固定开，off = 固定关）
+ *   2. 否则：预设自带思维链美化 / 隐藏正则 → 关（否则正则拿不到原始思维链）
+ *   3. 否则：开
+ * settings.autoParse 作为总意愿（默认 true）；为 false 时不再自动开启。
+ * @param {string} presetName
+ * @param {boolean} hasConflict
+ */
+function effectiveAutoParse(presetName, hasConflict) {
+    const settings = getSettings();
+    if ((settings.autoParseKeep ?? []).includes(presetName)) {
+        return true;
+    }
+    if ((settings.autoParseOff ?? []).includes(presetName)) {
+        return false;
+    }
+    return settings.autoParse !== false && !hasConflict;
 }
 
-/** 暂停自动解析时给状态栏加一句说明 */
+/** 扩展每次写入 auto_parse 都以此为准 */
+function wantAutoParse() {
+    return autoParseWanted;
+}
+
+/** 自动解析被暂停（或强行开启）时给状态栏加一句说明 */
 function suppressionNote() {
     if (!autoParseSuppressed || cotDisplayScripts.length === 0) {
         return '';
     }
     const names = cotDisplayScripts.slice(0, 2).map(item => item.scriptName).join('、');
+    const more = cotDisplayScripts.length > 2 ? ' 等' : '';
+    if (autoParseWanted) {
+        return `｜本预设自带思维链显示正则（${names}${more}），但已按你的手动设置保持开启，美化/隐藏可能会失效`;
+    }
     const kinds = cotDisplayScripts.some(item => item.kind === 'beautify') ? '美化' : '隐藏';
-    return `｜已暂停自动解析：预设自带思维链${kinds}正则（${names}${cotDisplayScripts.length > 2 ? ' 等' : ''}），开启会把原文抽走导致正则失效`;
+    return `｜已自动关闭自动解析：预设自带思维链${kinds}正则（${names}${more}），开启会把原文抽走导致正则失效`;
 }
 
 /**
@@ -185,9 +212,7 @@ function syncNow(reason = 'manual') {
 
     // 无论是否命中规则都跑一次识别：面板要展示候选，用户也可能想把它改用另一组
     const detection = runDetection();
-    if (autoParseSuppressed) {
-        $('#raps_auto_parse').prop('checked', false);
-    }
+    $('#raps_auto_parse').prop('checked', autoParseWanted);
     const note = suppressionNote();
 
     const rule = findMatchingRule(settings.rules, presetName);
@@ -213,10 +238,14 @@ function syncNow(reason = 'manual') {
     }
 
     if (!rule) {
+        // 没命中规则、也没识别出标签：前后缀保持不动，但「自动解析」开关仍按规则同步
+        if (autoParseWanted !== !!power_user?.reasoning?.auto_parse) {
+            applyToPowerUser({ auto_parse: autoParseWanted });
+        }
         const tail = settings.autodetect
-            ? '也没在思维链条目里找到成对标签，保持当前设置不变。'
-            : '，且自动识别已关闭，保持当前设置不变。';
-        setStatus(`没有规则命中预设「${presetName}」，${tail}${note}`);
+            ? '也没在思维链条目里找到成对标签，前缀/后缀保持不动'
+            : '，且自动识别已关闭，前缀/后缀保持不动';
+        setStatus(`没有规则命中预设「${presetName}」，${tail}；自动解析${autoParseWanted ? '开' : '关'}。${note}`);
         return;
     }
 
@@ -312,10 +341,10 @@ function runDetection() {
     const { presetName, chunks, presetBody } = getPresetCorpus();
     const mode = 'safe';
 
-    // 预设自带的思维链美化 / 隐藏正则：它们需要原始思维链文本，命中就暂停自动解析
+    // 预设自带的思维链美化 / 隐藏正则：它们需要原始思维链文本，命中就自动关掉自动解析
     cotDisplayScripts = findCotDisplayScripts(presetBody?.extensions?.regex_scripts);
-    const keepAutoParse = (getSettings().autoParseKeep ?? []).includes(presetName);
-    autoParseSuppressed = cotDisplayScripts.length > 0 && !keepAutoParse;
+    autoParseSuppressed = cotDisplayScripts.length > 0;
+    autoParseWanted = effectiveAutoParse(presetName, autoParseSuppressed);
 
     const result = { ...detectReasoningTags(chunks, { mode }), presetName, mode, chunkCount: chunks.length };
     lastDetection = result;
@@ -428,7 +457,9 @@ function renderDetectReport(result) {
 
     if (autoParseSuppressed) {
         $report.append($('<div class="raps-cand-sub"></div>').text(
-            `检测到预设自带的思维链显示正则（${cotDisplayScripts.map(item => `${item.scriptName}·${item.kind === 'beautify' ? '美化' : '隐藏'}`).join('、')}），已自动暂停自动解析。`,
+            autoParseWanted
+                ? `检测到预设自带的思维链显示正则（${cotDisplayScripts.map(item => `${item.scriptName}·${item.kind === 'beautify' ? '美化' : '隐藏'}`).join('、')}），但已按你的手动设置保持自动解析开启。`
+                : `检测到预设自带的思维链显示正则（${cotDisplayScripts.map(item => `${item.scriptName}·${item.kind === 'beautify' ? '美化' : '隐藏'}`).join('、')}），已自动关闭自动解析。`,
         ));
     }
 
@@ -574,12 +605,8 @@ function expandRule(id) {
 
 function refreshStaticUi() {
     const settings = getSettings();
-    // 「自动解析」以 ST 当前状态为准（用户也可能在 ST 自己的推理面板里改）
-    if (power_user?.reasoning && typeof power_user.reasoning.auto_parse === 'boolean') {
-        settings.autoParse = power_user.reasoning.auto_parse;
-    }
     $('#raps_enabled').prop('checked', settings.enabled);
-    $('#raps_auto_parse').prop('checked', settings.autoParse !== false);
+    $('#raps_auto_parse').prop('checked', autoParseWanted);
     $('#raps_autodetect').prop('checked', settings.autodetect);
 }
 
@@ -689,24 +716,24 @@ function bindStaticUi() {
     $('#raps_auto_parse').on('input', function () {
         const on = $(this).prop('checked');
         const settings = getSettings();
-        settings.autoParse = on;
         const presetName = getCurrentPresetName();
-        if (on && autoParseSuppressed) {
-            // 用户明确要开：记住这个预设以后不再自动关闭
-            const keep = new Set(settings.autoParseKeep ?? []);
-            if (presetName) {
-                keep.add(presetName);
-            }
-            settings.autoParseKeep = [...keep];
-            autoParseSuppressed = false;
-            setStatus(`已为预设「${presetName || '（未知）'}」强行开启自动解析：它自带思维链显示正则，正则可能会失效。`);
+        const keep = new Set(settings.autoParseKeep ?? []);
+        const off = new Set(settings.autoParseOff ?? []);
+        if (on) {
+            keep.add(presetName);
+            off.delete(presetName);
         } else {
-            setStatus(on
-                ? `已开启 ST 的自动解析。当前预设：${presetName || '（未知）'}`
-                : '已关闭 ST 的自动解析（前缀 / 后缀仍会跟随预设更新）。');
+            off.add(presetName);
+            keep.delete(presetName);
         }
+        settings.autoParseKeep = [...keep];
+        settings.autoParseOff = [...off];
+        autoParseWanted = on;
         saveSettingsDebounced();
         applyToPowerUser({ auto_parse: on });
+        setStatus(on
+            ? `已把预设「${presetName || '（未知）'}」固定为开启自动解析${autoParseSuppressed ? '（它自带思维链显示正则，美化/隐藏可能失效）' : ''}`
+            : `已把预设「${presetName || '（未知）'}」固定为关闭自动解析`);
     });
     $('#raps_autodetect').on('input', function () {
         getSettings().autodetect = $(this).prop('checked');

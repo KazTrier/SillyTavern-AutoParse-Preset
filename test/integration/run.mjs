@@ -290,7 +290,7 @@ test('都没命中时保持当前设置不变（不再有 fallback 选项）', (
     switchPreset('NoMatchPreset');
     assert.equal(power_user.reasoning.auto_parse, true);
     assert.equal(power_user.reasoning.prefix, THINK_OPEN, '不命中时不改动前缀');
-    assert.match(status(), /保持当前设置不变/);
+    assert.match(status(), /前缀\/后缀保持不动/);
 });
 
 /* ---------------- 5. 主 API 与总开关 ---------------- */
@@ -609,23 +609,29 @@ test('不再有任何弹窗提醒（toasts 始终为空）', () => {
     assert.equal(toasts.length, baseline);
 });
 
-test('「自动解析」开关直接控制 ST 的自动解析状态，并被后续同步沿用', () => {
+test('手动固定关闭后，切预设不会再把它打开（直到手动改回）', () => {
     resetExtensionSettings();
+    setCurrentPreset('开关测试预设', [
+        { identifier: 'c', name: '🧠思维链-主块', content: '<story_driver>推理</story_driver>' },
+    ]);
+    assert.equal(power_user.reasoning.prefix, '<story_driver>', '前后缀跟随预设更新');
+    assert.equal(power_user.reasoning.auto_parse, true, '无冲突默认自动开');
+
     $('#raps_auto_parse').prop('checked', false).trigger('input');
-    assert.equal(settings().autoParse, false);
     assert.equal(power_user.reasoning.auto_parse, false);
-    assert.match(status(), /已关闭 ST 的自动解析/);
+    assert.equal(settings().autoParseOff.includes('开关测试预设'), true);
+
+    setCurrentPreset('另一个普通预设', [{ identifier: 'x', name: 'Main', content: 'no think tag here' }]);
+    assert.equal(power_user.reasoning.auto_parse, true, '其它预设仍自动开');
 
     setCurrentPreset('开关测试预设', [
         { identifier: 'c', name: '🧠思维链-主块', content: '<story_driver>推理</story_driver>' },
     ]);
-    assert.equal(power_user.reasoning.prefix, '<story_driver>', '前后缀仍跟随预设更新');
-    assert.equal(power_user.reasoning.auto_parse, false, '关闭后切换预设不应把它打开');
+    assert.equal(power_user.reasoning.auto_parse, false, '手动固定的预设不应被自动打开');
 
     $('#raps_auto_parse').prop('checked', true).trigger('input');
-    assert.equal(settings().autoParse, true);
     assert.equal(power_user.reasoning.auto_parse, true);
-    assert.match(status(), /已开启 ST 的自动解析/);
+    assert.equal(settings().autoParseOff.includes('开关测试预设'), false);
 });
 
 /* ---------------- 11. 预设自带思维链美化/隐藏正则 → 暂停自动解析 ---------------- */
@@ -642,32 +648,64 @@ const BEAUTIFY_EXTRA = {
     },
 };
 
-test('预设自带思维链美化正则 → 自动暂停自动解析并说明原因', () => {
+test('预设自带思维链美化正则 → 自动关闭自动解析并说明原因', () => {
     resetExtensionSettings();
     setCurrentPreset('智脑-Z', COT_PROMPTS, BEAUTIFY_EXTRA);
     assert.equal(power_user.reasoning.prefix, '<脑内会议>', '前后缀仍照常设置');
     assert.equal(power_user.reasoning.auto_parse, false, '应自动关闭自动解析');
     assert.equal($('#raps_auto_parse').prop('checked'), false, '面板开关应显示为关');
-    assert.match(status(), /已暂停自动解析/);
+    assert.match(status(), /已自动关闭自动解析/);
     assert.match($('#raps_detect_report').text(), /01-小左/);
 });
 
-test('手动强开自动解析后，该预设不再被自动关闭', () => {
+test('手动固定为开启后，该预设不再被自动关闭', () => {
     $('#raps_auto_parse').prop('checked', true).trigger('input');
     assert.equal(power_user.reasoning.auto_parse, true);
     assert.equal(settings().autoParseKeep.includes('智脑-Z'), true);
-    assert.match(status(), /强行开启自动解析/);
+    assert.match(status(), /固定为开启自动解析/);
 
     // 再切回同一个预设：仍保持开启
     setCurrentPreset('智脑-Z', COT_PROMPTS, BEAUTIFY_EXTRA);
     assert.equal(power_user.reasoning.auto_parse, true);
 });
 
-test('没有美化正则的预设不受影响（自动解析照常开）', () => {
+test('没有美化正则的预设 ⇒ 自动开启自动解析', () => {
     resetExtensionSettings();
     setCurrentPreset('普通预设', COT_PROMPTS);
     assert.equal(power_user.reasoning.prefix, '<脑内会议>');
     assert.equal(power_user.reasoning.auto_parse, true);
+    assert.equal($('#raps_auto_parse').prop('checked'), true);
+});
+
+test('手动固定为关闭后：该预设保持关闭，换别的预设仍自动开启', () => {
+    resetExtensionSettings();
+    setCurrentPreset('要关解析的预设', COT_PROMPTS);
+    assert.equal(power_user.reasoning.auto_parse, true);
+
+    $('#raps_auto_parse').prop('checked', false).trigger('input');
+    assert.equal(power_user.reasoning.auto_parse, false);
+    assert.equal(settings().autoParseOff.includes('要关解析的预设'), true);
+    assert.match(status(), /固定为关闭自动解析/);
+
+    // 切走再切回来：手动设置被记住
+    setCurrentPreset('另一个普通预设', COT_PROMPTS);
+    assert.equal(power_user.reasoning.auto_parse, true, '其它预设仍自动开启');
+    setCurrentPreset('要关解析的预设', COT_PROMPTS);
+    assert.equal(power_user.reasoning.auto_parse, false, '手动关闭的预设被记住');
+    assert.equal($('#raps_auto_parse').prop('checked'), false);
+
+    // 再手动开回来，off 记录被清掉
+    $('#raps_auto_parse').prop('checked', true).trigger('input');
+    assert.equal(settings().autoParseOff.includes('要关解析的预设'), false);
+    assert.equal(settings().autoParseKeep.includes('要关解析的预设'), true);
+});
+
+test('没识别出标签的预设：前后缀不动，但自动解析开关照常同步', () => {
+    resetExtensionSettings();
+    setCurrentPreset('无思维链的预设', [{ identifier: 'a', name: 'Main', content: 'Write the reply.' }]);
+    assert.equal(power_user.reasoning.prefix, '<脑内会议>', '前后缀保持不动');
+    assert.equal(power_user.reasoning.auto_parse, true, '无冲突 ⇒ 自动开启');
+    assert.match(status(), /前缀\/后缀保持不动；自动解析开/);
 });
 
 /* ---------------- 汇总 ---------------- */
