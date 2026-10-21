@@ -495,6 +495,83 @@ test('findCotDisplayScripts：容忍畸形输入', () => {
     assert.deepEqual(findCotDisplayScripts([null, 42, {}]), []);
 });
 
+/* ---------------- balanced 模式 / 新证据（v2 识别率优化） ---------------- */
+
+const O = name => LT + name + GT;
+const C = name => LT + '/' + name + GT;
+
+test('balanced：只写开标记 + 明确要写进标签 → 敢合成闭合标签', () => {
+    const text = `把思考过程写进 ${O('thinking')} 开标记里，正文再另起。`;
+    assert.equal(detectReasoningTags(chunksOf(text), { mode: 'safe' }).best, null, 'safe 仍然不套用');
+    const best = detectReasoningTags(chunksOf(text), { mode: 'balanced' }).best;
+    assert.ok(best, 'balanced 应当采用');
+    assert.equal(best.prefix, O('thinking'));
+    assert.equal(best.suffix, C('thinking'));
+    assert.equal(best.pairing, 'synthesized');
+});
+
+test('开闭同源异形：<think> … </thinking> 也认', () => {
+    const best = bestOf(`先思考：${O('think')} 想清楚再写 ${C('thinking')}`);
+    assert.ok(best);
+    assert.equal(best.prefix, O('think'));
+    assert.equal(best.suffix, C('thinking'));
+    assert.equal(best.pairing, 'variant');
+    assert.equal(isApplicable(best, 'safe'), true);
+});
+
+test('引号里的字面量（正则/替换串）不会被硬配成标签', () => {
+    const best = bestOf([
+        `在内部用 ${O('think')} 思考，然后输出。隐藏提示词：("true_thoughts_visible")`,
+        `${C('think')}`,
+    ]);
+    assert.ok(best);
+    assert.equal(best.prefix, O('think'), '应当选 <think>，而不是引号字面量');
+    assert.notEqual(best.prefix, '("true_thoughts_visible")');
+});
+
+test('中文强词（心声）成对出现即可采用，不需要「思考」二字', () => {
+    const text = `角色内心独白放在 ${O('心声')} 与 ${C('心声')} 之间，不写进正文。`;
+    const result = detectReasoningTags(chunksOf(text), { mode: 'safe' });
+    assert.equal(result.pool, 'lexicon', '走词典兜底档');
+    assert.equal(result.best?.prefix, O('心声'));
+    assert.equal(result.best?.suffix, C('心声'));
+});
+
+test('助手预填充里的开标记算强证据', () => {
+    const result = detectReasoningTags([
+        { source: 'prefill', name: 'Assistant Prefill', text: O('thought') },
+        { source: 'main', name: '主提示词', text: '接在预填充后面继续写正文。' },
+    ], { mode: 'balanced' });
+    const candidate = result.candidates.find(item => item.tagName === 'thought');
+    assert.ok(candidate, '应当找到 <thought>');
+    assert.equal(candidate.prefill, true);
+    assert.equal(result.best?.prefix, O('thought'));
+});
+
+test('结构性名字不当思维链：<style_elements> / <world_rules>', () => {
+    for (const name of ['style_elements', 'world_rules', 'tone_tags']) {
+        const text = `格式示范：${O(name)} 在这里写满设定 ${C(name)}`;
+        const result = detectReasoningTags([{ source: 'cot', name: '思维链条目', text }], { mode: 'balanced' });
+        assert.equal(result.best, null, `${name} 不应被当成思维链标签`);
+    }
+});
+
+test('控制/排版标签不当思维链：<continue> / <li>', () => {
+    for (const name of ['continue', 'li', 'body']) {
+        const text = `示范：${O(name)} 继续往下写 ${C(name)}`;
+        const result = detectReasoningTags([{ source: 'cot', name: '思维链收尾', text }], { mode: 'balanced' });
+        assert.equal(result.best, null, `${name} 不应被当成思维链标签`);
+    }
+});
+
+test('高档次全不合格时会往下找，而不是直接返回 null', () => {
+    const result = detectReasoningTags([
+        { source: 'cot', name: '思维链收尾', text: `这里继续 ${O('continue')} 正文 ${C('continue')}` },
+        { source: 'main', name: '主提示词', text: `思考写进 ${O('thinking')} 与 ${C('thinking')} 之间。` },
+    ], { mode: 'balanced' });
+    assert.equal(result.best?.tagName, 'thinking', '应当落到正文说明那一档');
+});
+
 /* ---------------- 汇总 ---------------- */
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

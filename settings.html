@@ -19,7 +19,21 @@
                     <input id="raps_autodetect" type="checkbox">
                     <span>自动识别</span>
                 </label>
+                <label class="checkbox_label" for="raps_remember_manual" title="你手动改动 ST「推理」里的前缀/后缀/分隔符时，自动记成当前预设的规则，之后不再被覆盖">
+                    <input id="raps_remember_manual" type="checkbox">
+                    <span>记住手改</span>
+                </label>
                 <div id="raps_apply_now" class="menu_button" title="按当前预设重新应用一次">立即应用</div>
+                <div id="raps_pin_current" class="menu_button" title="把 ST 里现在的前缀/后缀/分隔符锁定成当前预设的规则，谁都不会再改它">锁定当前</div>
+            </div>
+
+            <div class="raps-row">
+                <span class="raps-label">识别强度</span>
+                <select id="raps_detect_mode" class="text_pole" title="识别结果不准时先换这里，再看下面报告里「为什么没自动套用」">
+                    <option value="safe">保守：只认思维链条目</option>
+                    <option value="balanced">平衡：也认「只写了开标记」的强证据（推荐）</option>
+                    <option value="aggressive">激进：任何成对标签都试</option>
+                </select>
             </div>
 
             <div class="raps-status" id="raps_status">正在初始化…</div>

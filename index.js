@@ -36,6 +36,34 @@ import {
 const LOG = '[AutoParsePreset]';
 const SETTINGS_KEY = 'reasoningAutoParsePreset';
 
+/** detectReasoningTags 的三种模式，配 settings.html 的下拉框 */
+const DETECT_MODES = ['safe', 'balanced', 'aggressive'];
+
+const DETECT_MODE_LABELS = {
+    safe: '保守（只认思维链条目）',
+    balanced: '平衡（推荐：也认「只写了开标记」的强证据）',
+    aggressive: '激进（任何成对标签都试）',
+};
+
+const POOL_LABELS = {
+    'cot-primary': '思维链主题条目（已启用）',
+    'cot-primary-any': '思维链主题条目',
+    'cot-secondary': '思维链条目（已启用）',
+    'cot-secondary-any': '思维链条目',
+    instruction: '正文里的包裹说明',
+    lexicon: '标签名兜底',
+    all: '全部候选',
+    empty: '没有候选',
+};
+
+const PAIRING_LABELS = {
+    symmetric: '开闭成对',
+    variant: '同源异形（think / thinking）',
+    'cross-entry': '开闭分在两个条目',
+    keyword: '关键词配对',
+    synthesized: '只看到开标记，闭合标签是推出来的',
+};
+
 /** 从扩展自身的 URL 推断安装目录名，这样用户改名文件夹也不会导致 settings.html 找不到 */
 const MODULE_PATH = new URL(import.meta.url).pathname;
 const PATH_PARTS = MODULE_PATH.split('/').filter(Boolean);
@@ -46,6 +74,10 @@ const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
     autoParse: true,
     autodetect: true,
+    /** 识别模式：safe 只认思维链条目；balanced 额外接受「只写了开标记」的强证据；aggressive 全都要 */
+    detectMode: 'balanced',
+    /** 手改 ST 的推理前后缀时，是否自动记成规则（否则下次切预设会被识别结果覆盖） */
+    rememberManual: true,
 });
 
 /* ------------------------------------------------------------------ *
@@ -66,6 +98,12 @@ function getSettings() {
     }
     if (typeof settings.autodetect !== 'boolean') {
         settings.autodetect = DEFAULT_SETTINGS.autodetect;
+    }
+    if (!DETECT_MODES.includes(settings.detectMode)) {
+        settings.detectMode = DEFAULT_SETTINGS.detectMode;
+    }
+    if (typeof settings.rememberManual !== 'boolean') {
+        settings.rememberManual = DEFAULT_SETTINGS.rememberManual;
     }
     // 兼容旧配置里手写的「补充文本」（无界面，但存在就继续用）
     if (typeof settings.extraText !== 'string') {
@@ -132,6 +170,9 @@ function effectiveAutoParse(presetName, hasConflict) {
     return settings.autoParse !== false && !hasConflict;
 }
 
+/** 扩展自己写 ST 输入框时 +1，用来区分「程序改的」和「用户手改的」 */
+let suppressManualCapture = 0;
+
 /** 扩展每次写入 auto_parse 都以此为准 */
 function wantAutoParse() {
     return autoParseWanted;
@@ -161,6 +202,16 @@ function applyToPowerUser(update) {
         return;
     }
 
+    suppressManualCapture += 1;
+    try {
+        applyToPowerUserInner(update);
+    } finally {
+        suppressManualCapture -= 1;
+    }
+}
+
+/** 真正写值的那一半；外面只负责屏蔽「手改捕获」 */
+function applyToPowerUserInner(update) {
     if (typeof update.auto_parse === 'boolean') {
         power_user.reasoning.auto_parse = update.auto_parse;
         $('#reasoning_auto_parse').prop('checked', update.auto_parse).trigger('input');
@@ -339,7 +390,7 @@ function getPresetCorpus() {
 /** 跑一次识别，刷新报告面板，并把结果记进设置 */
 function runDetection() {
     const { presetName, chunks, presetBody } = getPresetCorpus();
-    const mode = 'safe';
+    const mode = getSettings().detectMode ?? DEFAULT_SETTINGS.detectMode;
 
     // 预设自带的思维链美化 / 隐藏正则：它们需要原始思维链文本，命中就自动关掉自动解析
     cotDisplayScripts = findCotDisplayScripts(presetBody?.extensions?.regex_scripts);
@@ -369,6 +420,9 @@ function runDetection() {
         cotCandidateCount: result.cotCandidateCount ?? 0,
         best: summarize(result.best),
         candidates: result.candidates.slice(0, 5).map(summarize),
+        pool: result.pool,
+        tier: result.tier,
+        diagnostics: result.diagnostics ?? null,
         cotDisplayScripts: cotDisplayScripts.map(item => ({ ...item })),
         autoParseSuppressed,
     };
@@ -387,12 +441,21 @@ function pinRuleForPreset(presetName, candidate) {
     const existing = settings.rules.find(rule =>
         rule.matchType === MATCH_TYPES.EXACT && String(rule.pattern).toLowerCase() === name.toLowerCase());
 
+    const autoParse = candidate.autoParse ?? true;
+    const separator = candidate.separator ?? '';
+    // 注意：getSettings() 每次都会用 createRule 重建规则对象，函数返回后再改 note 会丢，
+    // 所以备注必须在这里一起写进去。
+    const note = candidate.note ?? `手动采用：${candidate.tagName}`;
+
     if (existing) {
         existing.enabled = true;
-        existing.autoParse = true;
+        existing.autoParse = autoParse;
         existing.prefix = candidate.prefix;
         existing.suffix = candidate.suffix;
-        existing.note = `手动采用：${candidate.tagName}`;
+        if (separator !== '') {
+            existing.separator = separator;
+        }
+        existing.note = note;
         saveSettingsDebounced();
         renderRules();
         return existing;
@@ -401,10 +464,11 @@ function pinRuleForPreset(presetName, candidate) {
     const rule = createRule({
         matchType: MATCH_TYPES.EXACT,
         pattern: name,
-        autoParse: true,
+        autoParse,
         prefix: candidate.prefix,
         suffix: candidate.suffix,
-        note: `手动采用：${candidate.tagName}`,
+        separator,
+        note,
     });
     settings.rules.push(rule);
     saveSettingsDebounced();
@@ -488,10 +552,23 @@ function renderDetectReport(result) {
             .appendTo($head);
 
         $row.append($('<div class="raps-cand-sub"></div>').text(
-            `${candidate.score} 分｜${candidate.pairing === 'symmetric' ? '开闭成对' : (candidate.pairing === 'keyword' ? '关键词配对' : '仅见开标记')}｜来源：${(candidate.sources ?? []).join('、') || '—'}`,
+            `${candidate.score} 分｜${PAIRING_LABELS[candidate.pairing] ?? candidate.pairing}｜来源：${(candidate.sources ?? []).join('、') || '—'}`,
         ));
         $report.append($row);
     });
+
+    const diag = result.diagnostics;
+    if (diag) {
+        $report.append($('<div class="raps-dim"></div>').text(
+            `模式：${DETECT_MODE_LABELS[diag.mode] ?? diag.mode}｜看的是：${POOL_LABELS[diag.pool] ?? diag.pool}｜候选 ${diag.total} 个`,
+        ));
+        if (!result.best && Array.isArray(diag.reasons) && diag.reasons.length > 0) {
+            $report.append($('<div class="raps-dim"></div>').text('为什么没自动套用：'));
+            diag.reasons.slice(0, 4).forEach(item => {
+                $report.append($('<div class="raps-cand-sub"></div>').text(`${item.tag} — ${item.reason}`));
+            });
+        }
+    }
 
     if (result.ignoredCount > 0) {
         $report.append($('<div class="raps-dim"></div>').text(
@@ -509,6 +586,74 @@ function onAdoptCandidate(index) {
     }
     const presetName = lastDetection.presetName || getCurrentPresetName() || '（未知）';
     applyDetected(candidate, presetName, 'manual-adopt');
+}
+
+/* ------------------------------------------------------------------ *
+ * 手动设置：捕获 + 锁定
+ * ------------------------------------------------------------------ */
+
+/** 读 ST「推理」面板里现在的值 */
+function readCurrentReasoning() {
+    return {
+        autoParse: !!power_user?.reasoning?.auto_parse,
+        prefix: power_user?.reasoning?.prefix ?? '',
+        suffix: power_user?.reasoning?.suffix ?? '',
+        separator: power_user?.reasoning?.separator ?? '',
+    };
+}
+
+/**
+ * 把「现在 ST 里的前后缀」写成当前预设的精确规则。
+ * 这是「手动设置被刷新」的正解：写成规则后，findMatchingRule 会先命中它，自动识别不再插手。
+ */
+function pinCurrentAsRule(reason = '手动锁定') {
+    const presetName = getCurrentPresetName() || '（未知）';
+    const current = readCurrentReasoning();
+    const rule = pinRuleForPreset(presetName, {
+        prefix: current.prefix,
+        suffix: current.suffix,
+        separator: current.separator,
+        autoParse: current.autoParse,
+        tagName: '手动设置',
+        note: `已锁定：前缀 ${current.prefix || '（空）'} / 后缀 ${current.suffix || '（空）'}`,
+    });
+
+    const settings = getSettings();
+    settings.lastApplied = {
+        preset: presetName,
+        source: 'manual',
+        tag: '手动设置',
+        at: new Date().toISOString(),
+        reason,
+        signature: `${current.prefix}\u0000${current.suffix}\u0000${current.autoParse}`,
+    };
+    saveSettingsDebounced();
+    renderRules();
+    setStatus(`已锁定预设「${presetName}」：前缀 ${JSON.stringify(current.prefix)}，后缀 ${JSON.stringify(current.suffix)}。以后切换预设、改聊天或其它设置都不会再覆盖它。`);
+    return rule;
+}
+
+/**
+ * 用户手改 ST 的推理前后缀 → 防抖后自动记成规则。
+ * 扩展自己写值时 suppressManualCapture > 0，不会被当成手改。
+ */
+function onManualReasoningEdit(which) {
+    if (suppressManualCapture > 0 || !getSettings().rememberManual) {
+        return;
+    }
+    const presetName = getCurrentPresetName() || '（未知）';
+    const current = readCurrentReasoning();
+    pinRuleForPreset(presetName, {
+        prefix: current.prefix,
+        suffix: current.suffix,
+        separator: current.separator,
+        autoParse: current.autoParse,
+        tagName: '手动设置',
+        note: `手改记住（${which}）：${current.prefix || '（空）'} / ${current.suffix || '（空）'}`,
+    });
+    saveSettingsDebounced();
+    renderRules();
+    setStatus(`已记住你手动改的${which}：预设「${presetName}」现在是 前缀 ${JSON.stringify(current.prefix)}、后缀 ${JSON.stringify(current.suffix)}，自动识别不会再覆盖它。`);
 }
 
 /* ------------------------------------------------------------------ *
@@ -608,6 +753,8 @@ function refreshStaticUi() {
     $('#raps_enabled').prop('checked', settings.enabled);
     $('#raps_auto_parse').prop('checked', autoParseWanted);
     $('#raps_autodetect').prop('checked', settings.autodetect);
+    $('#raps_detect_mode').val(settings.detectMode ?? DEFAULT_SETTINGS.detectMode);
+    $('#raps_remember_manual').prop('checked', settings.rememberManual !== false);
 }
 
 function onFieldChange(event) {
@@ -744,12 +891,35 @@ function bindStaticUi() {
         onAdoptCandidate(Number($(this).attr('data-index')));
     });
 
+    // 识别模式：改完立刻按新档位重新识别一遍
+    $('#raps_detect_mode').on('change', function () {
+        const mode = String($(this).val());
+        getSettings().detectMode = DETECT_MODES.includes(mode) ? mode : DEFAULT_SETTINGS.detectMode;
+        saveSettingsDebounced();
+        syncNow('detect-mode');
+    });
+    $('#raps_remember_manual').on('input', function () {
+        getSettings().rememberManual = $(this).prop('checked');
+        saveSettingsDebounced();
+        setStatus(getSettings().rememberManual
+            ? '已开启：以后你手改 ST 的推理前后缀，会自动记成当前预设的规则。'
+            : '已关闭：手改的前后缀只在这台会话里有效，切预设或改设置后可能被自动识别覆盖。');
+    });
+    $('#raps_pin_current').on('click', () => pinCurrentAsRule('面板锁定'));
+
     $('#raps_add_rule').on('click', onAddRule);
     $('#raps_apply_now').on('click', () => syncNow('manual'));
 
     $('#raps_rules')
         .on('input change', '[data-field]', onFieldChange)
         .on('click', '.raps-action', onActionClick);
+
+    // ST「推理」面板的三个输入框：手改就记下来（委托绑定，ST 重建面板也不会丢）
+    $(document)
+        .off('input.rapsManual')
+        .on('input.rapsManual', '#reasoning_prefix', () => onManualReasoningEdit('前缀'))
+        .on('input.rapsManual', '#reasoning_suffix', () => onManualReasoningEdit('后缀'))
+        .on('input.rapsManual', '#reasoning_separator', () => onManualReasoningEdit('分隔符'));
 }
 
 /* ------------------------------------------------------------------ *

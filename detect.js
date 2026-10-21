@@ -49,6 +49,130 @@ const NAME_CHARS = '[^<>|【】『』「」\\[\\]{}()\\s]';
 /** 标签名 / 附近文本里出现这些词，说明和思维链有关（注意：**不含** 内心/心声/独白 —— 那些是给玩家看的正文内容） */
 const THINKING_PATTERN = /(think|thought|reason|analysis|analy[sz]e|chain[_\s-]?of[_\s-]?(thought|think)|ecot|cot|scratchpad|reflect|deliberat|脑内|思考|思维|推理|沉思|分析)/i;
 
+/** 已知的「思维链标签名」字典（小写；比较前会剥掉首尾符号与内部空白） */
+export const COT_TAG_LEXICON = Object.freeze({
+    /** 几乎专用于思维链的名字 */
+    strong: Object.freeze([
+        'think', 'thinking', 'think_out_loud', 'thought', 'thoughts', 'thinking_process',
+        'reasoning', 'reasoning_content', 'reasoning_process', 'reason',
+        'analysis', 'analyse', 'analyze', 'cot', 'chain_of_thought', 'chainofthought',
+        'scratchpad', 'inner_voice', 'innervoice', 'inner_thought', 'inner_thoughts',
+        'inner_monologue', 'monologue', 'musings', 'musing', 'deliberation', 'reflection',
+        'brainstorm', 'brainstorming',
+        '思考', '思维', '思维链', '推理', '推理过程', '脑内', '内心', '心声', '心音', '内语',
+        '独白', '念头', '腹诽', '意识流', '碎碎念',
+    ]),
+    /** 有歧义但大概率是思维链 */
+    weak: Object.freeze([
+        'plan', 'planning', 'intent', 'intention', 'mind', 'thought_process', 'notes',
+        'working_notes', 'premise', 'assessment', 'consideration',
+        '心理', '想法', '内心戏',
+    ]),
+});
+
+const STRONG_LEXICON = new Set(COT_TAG_LEXICON.strong);
+const WEAK_LEXICON = new Set(COT_TAG_LEXICON.weak);
+
+/**
+ * 规范化标签名：去首尾符号、去引号/星号、小写。
+ * @param {string} name
+ */
+export function normalizeTagName(name) {
+    return String(name ?? '')
+        .trim()
+        .replace(/^[/|｜]+/, '')
+        .toLowerCase()
+        .replace(/[*~`'"“”‘’\s]+/g, '')
+        .replace(/^[_\-.]+|[_\-.]+$/g, '');
+}
+
+/**
+ * 名字在思维链词典里的强度：2 = 强，1 = 弱，0 = 不在词典。
+ * 支持 `think_block` / `thinking_chain` / `思考块` 这类带后缀的写法。
+ * @param {string} name
+ */
+export function lexiconStrength(name) {
+    const base = normalizeTagName(name);
+    if (base === '') {
+        return 0;
+    }
+    if (STRONG_LEXICON.has(base)) {
+        return 2;
+    }
+    if (WEAK_LEXICON.has(base)) {
+        return 1;
+    }
+    const parts = base.split(/[_\-.]+/).filter(Boolean);
+    if (parts.length > 1) {
+        if (STRONG_LEXICON.has(parts[0])) {
+            return 2;
+        }
+        if (WEAK_LEXICON.has(parts[0])) {
+            return 1;
+        }
+        const joined = parts.join('');
+        if (STRONG_LEXICON.has(joined)) {
+            return 2;
+        }
+        if (WEAK_LEXICON.has(joined)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** 只留字母数字与汉字，用来比较「两个标签名是否同源」 */
+export function tagStem(name) {
+    return normalizeTagName(name).replace(/[^a-z0-9\u4e00-\u9fff]/g, '');
+}
+
+/**
+ * 两个标签名是否同源：`think` / `thinking` / `think_block` 同源；`thought` / `think` 不同源。
+ * @param {string} a
+ * @param {string} b
+ */
+export function stemsMatch(a, b) {
+    const left = tagStem(a);
+    const right = tagStem(b);
+    if (left === '' || right === '') {
+        return false;
+    }
+    if (left === right) {
+        return true;
+    }
+    return left.length >= 3 && right.length >= 3 && (left.includes(right) || right.includes(left));
+}
+
+/**
+ * 明确不是思维链的控制/结构类标签名：`<continue>` 是续写控制符，`<ooc>` `<summary>` 是旁白/摘要。
+ * 名字里另有思维链词时不受影响（`<cot_continue>` 仍会被当思维链）。
+ */
+/** HTML / 排版标签：`<li>` `<p>` `<body>` 之类，写进 reasoning 前后缀只会把输出打乱 */
+const HTML_TAG_NAMES = new Set([
+    'html', 'body', 'head', 'div', 'span', 'p', 'br', 'hr', 'li', 'ul', 'ol', 'dl', 'dt', 'dd',
+    'a', 'img', 'em', 'i', 'b', 'u', 's', 'strong', 'small', 'sub', 'sup', 'mark', 'code', 'pre',
+    'blockquote', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'script', 'style', 'link', 'meta', 'title', 'font', 'center', 'details', 'summary_tag',
+]);
+
+const NON_COT_TAG_NAMES = new Set([
+    'continue', 'proceed', 'next', 'skip', 'pause', 'resume', 'stop', 'end', 'break',
+    'ooc', 'oos', 'sidebar', 'summary', 'recap', 'note', 'notes', 'memo', 'branch',
+    'choice', 'option', 'choice1', 'choice2',
+]);
+
+/**
+ * 名字一看就是「正文/格式/状态」类，而不是思维链：`<style_elements>` `<world_rules>` `<tone_tags>` …
+ * 只在名字里没有任何思维链词时才生效，避免误伤 `<character_thoughts>` 这种。
+ */
+const STRUCTURAL_NAME_HINT = /(style|tone|world|rules?|banned|archetype|psycholog|humor|elements?|format|frame|header|badge|tooltip|color|icon|category|premise|narration|speech|scene|affect|emotions?|moods?|status|state|tracker|panel|hud|display|inventory|stats?|dice|augment)/i;
+
+/** 形如 `"true_thoughts"` 的引号字面量：多半是正则/替换串里的字符串，不是标签 */
+const QUOTED_LITERAL_PATTERN = /^["'“”‘’`]|["'“”‘’`]$/;
+
+/** 助手预填充类条目：里面的开标记就是模型接着写的位置，证据很强 */
+const PREFILL_PATTERN = /(prefill|预填充|prefill_?text|assistant_?prefix)/i;
+
 /**
  * 条目名 / 标识符里出现这些词，说明这条提示词和思维链有关。
  * 不含 内心 / 心声 / 独白 / 心理 —— 那些条目是「NPC 内心话」这类**展示用**内容，不是思维链。
@@ -87,7 +211,7 @@ const FORMAT_SHELL_PATTERN = /(^|[_\s-])(format|fmt|格式|外壳)$/i;
 const MACRO_NAME_PATTERN = /::|^(setvar|getvar|addvar|delvar|incvar|decvar|tempvar|input|pick|random|roll)\b/i;
 
 /** 「把它包起来 / 写在里面」这类措辞 */
-const WRAP_CUE_PATTERN = /(wrap|wrapped|tagged|\btags?\b|inside|between|surround|enclose|using|use\s+the|spans?\b|put\s|place\s|write\s|output\s|begin\s|start\s|format|格式|标签|包裹|写在|放在|括在|之间|之内|中间|用\s*[<【「『\[{(]|使用|输出|以.{0,6}(开头|结尾))/i;
+const WRAP_CUE_PATTERN = /(wrap|wrapped|tagged|\btags?\b|inside|between|surround|enclose|using|use\s+the|spans?\b|put\s|place\s|write\s|output\s|begin\s|start\s|format|template|example|sample|e\.g\.|格式|模板|示例|样例|示范|如下|像这样|标签|标记|开标记|结束标记|收尾|包裹|包在|写进|写在|放在|括在|括起|之间|之内|中间|用\s*[<【「『\[{(]|使用|输出|以.{0,6}(开头|结尾|开始|结束))/i;
 
 /** 结构性 / 格式类标签，肯定不是思维链 */
 export const STRUCTURAL_TAG_BLOCKLIST = Object.freeze([
@@ -250,6 +374,7 @@ function tokenize(chunks) {
             identifier,
             enabled: chunk?.enabled,
             cotTier: cotTierOf(name, identifier),
+            isPrefill: PREFILL_PATTERN.test(`${name} ${identifier} ${chunk?.source ?? ''}`),
             antiByName: ANTI_COT_ENTRY_PATTERN.test(name) || ANTI_COT_ENTRY_PATTERN.test(identifier),
             text: String(chunk?.text ?? ''),
             opens: 0,
@@ -310,12 +435,18 @@ function tokenize(chunks) {
                 }
                 // 收集「包含该标签的行」，最多 5 条（带上**上一行**做上下文：
                 // 预设常常上一行写「请严格按照以下格式输出：」，下一行才是标签）
-                if (token.lines.length < 5) {
-                    for (let i = 0; i < lines.length && token.lines.length < 5; i++) {
+                if (token.lines.length < 6) {
+                    for (let i = 0; i < lines.length && token.lines.length < 6; i++) {
                         if (!lines[i].includes(full)) {
                             continue;
                         }
-                        const context = `${i > 0 ? lines[i - 1] : ''} ${lines[i]}`.trim().slice(0, 400);
+                        // 说明文字常常在标签的上一行甚至上两行（「请严格按以下格式输出：」），
+                        // 也常常在下一行（「不是正文的一部分」），所以窗口取 [-2, +1]
+                        const context = [lines[i - 2], lines[i - 1], lines[i], lines[i + 1]]
+                            .filter(part => typeof part === 'string' && part.trim() !== '')
+                            .join(' ')
+                            .trim()
+                            .slice(0, 600);
                         if (context !== '' && !token.lines.includes(context)) {
                             token.lines.push(context);
                         }
@@ -373,6 +504,11 @@ function findKeywordClose(openToken, tokens, chunkMeta) {
         if (token.style !== openToken.style && !isTerminatorName(token.name)) {
             continue;
         }
+        // 闭合标记必须与开标记同源（think / thinking / 思考…），否则会把
+        // `("true_thoughts_visible")` 和 `</think>` 硬凑成一对（真实预设里踩到过）
+        if (!stemsMatch(openToken.name, token.name)) {
+            continue;
+        }
         for (const [chunkIndex, openOffset] of openToken.presences) {
             if (chunkMeta[chunkIndex]?.anti) {
                 continue;
@@ -403,8 +539,61 @@ function findCrossEntryClose(openToken, byText, chunkMeta) {
     return cotTierOfToken(closeToken, chunkMeta) > 0 ? closeToken : null;
 }
 
+/**
+ * 开闭标记不同名但同源：`<think>` … `</thinking>`、`<reasoning>` … `</reason>`。
+ * 只认写成 `/name` 形式的正常闭合标记；`<|end▁of▁thinking|>` 这类结束标记走关键词配对。
+ */
+function findVariantClose(openToken, tokens, chunkMeta) {
+    for (const token of tokens) {
+        // 只认写成 `/name` 的普通闭合标记：`<｜end▁of▁thinking｜>` 属于结束标记，走关键词配对
+        if (token.kind !== 'close' || !String(token.name).trim().startsWith('/')) {
+            continue;
+        }
+        if (token.style !== openToken.style || onlyInAntiChunks(token, chunkMeta)) {
+            continue;
+        }
+        if (!stemVariantMatches(openToken.name, token.name)) {
+            continue;
+        }
+        for (const [chunkIndex, openOffset] of openToken.presences) {
+            if (chunkMeta[chunkIndex]?.anti) {
+                continue;
+            }
+            const closeOffset = token.presences.get(chunkIndex);
+            if (closeOffset !== undefined && closeOffset > openOffset) {
+                return token;
+            }
+        }
+    }
+    return null;
+}
+
+/** 同源变体：`think` vs `thinking` 算，`thought` vs `think` 不算（靠词典补齐） */
+function stemVariantMatches(openName, closeName) {
+    const left = tagStem(openName);
+    const right = tagStem(closeName);
+    if (left === '' || right === '' || left === right) {
+        return false;
+    }
+    return left.length >= 3 && right.length >= 3 && (left.includes(right) || right.includes(left));
+}
+
 function symmetricCloseText(openToken) {
     return `${openToken.style}/${openToken.name}${TAG_STYLES[openToken.styleIndex].right}`;
+}
+
+function isHtmlTagName(name) {
+    const flat = normalizeTagName(name).replace(/[\s_-]+/g, '');
+    return HTML_TAG_NAMES.has(flat) && !THINKING_PATTERN.test(String(name ?? ''));
+}
+
+function isNonCotName(name) {
+    const flat = normalizeTagName(name).replace(/[\s_-]+/g, '');
+    return NON_COT_TAG_NAMES.has(flat) && !THINKING_PATTERN.test(String(name ?? ''));
+}
+
+function structuralName(name) {
+    return STRUCTURAL_NAME_HINT.test(String(name ?? '')) && !THINKING_PATTERN.test(String(name ?? ''));
 }
 
 function blocklisted(name) {
@@ -450,7 +639,31 @@ function scoreCandidate(candidate) {
         score += 6;
     }
     if (candidate.pairing === 'synthesized') {
-        score -= 40;
+        // 有明确包裹说明 / 来自思维链条目 / 词典强词时，合成闭合标签是合理推断，轻罚
+        score -= (candidate.instruction || candidate.cotEntry || candidate.lexicon === 2) ? 12 : 40;
+    }
+    if (candidate.pairing === 'variant') {
+        score += 8;
+    }
+    if (candidate.lexicon === 2) {
+        score += 45;
+    } else if (candidate.lexicon === 1) {
+        score += 18;
+    }
+    if (candidate.prefill) {
+        score += 25;
+    }
+    if (candidate.quoted) {
+        score -= 70;
+    }
+    if (structuralName(candidate.tagName) && candidate.lexicon === 0) {
+        score -= 90;
+    }
+    if (isNonCotName(candidate.tagName) && candidate.lexicon === 0) {
+        score -= 120;
+    }
+    if (isHtmlTagName(candidate.tagName) && candidate.lexicon === 0) {
+        score -= 120;
     }
     if (candidate.blocklisted) {
         score -= 80;
@@ -484,15 +697,35 @@ export function isApplicable(candidate, mode = 'safe') {
     if (mode === 'aggressive') {
         return true;
     }
-    const paired = candidate.pairing === 'symmetric' || candidate.pairing === 'cross-entry';
+    if (candidate.quoted) {
+        return false;
+    }
+    // 「style / world_rules / tone_tags」这类名字一眼就不是思维链，除非名字里另有思维链词
+    if (candidate.lexicon === 0 && structuralName(candidate.tagName)) {
+        return false;
+    }
+    if (candidate.lexicon === 0 && isNonCotName(candidate.tagName)) {
+        return false;
+    }
+    if (candidate.lexicon === 0 && isHtmlTagName(candidate.tagName)) {
+        return false;
+    }
+    const paired = candidate.pairing === 'symmetric'
+        || candidate.pairing === 'cross-entry'
+        || candidate.pairing === 'variant';
     if (candidate.cotEntry && paired) {
         return true;
     }
-    if (paired && (candidate.keyword || candidate.instruction)) {
+    if (paired && (candidate.keyword || candidate.instruction || candidate.lexicon === 2 || candidate.prefill)) {
         return true;
     }
     if (candidate.keyword && candidate.pairing === 'keyword') {
         return true;
+    }
+    // balanced：只看到开标记时，只要证据够强就敢合成闭合标签。
+    // 真实预设里 `</think>` 常常根本不写出来（模型自己收尾），一律拒绝会漏掉一大片。
+    if (mode === 'balanced' && candidate.pairing === 'synthesized') {
+        return !!(candidate.instruction || candidate.prefill || candidate.cotEntry || candidate.lexicon === 2);
     }
     return false;
 }
@@ -537,6 +770,9 @@ export function detectReasoningTags(chunks, { mode = 'safe', limit = 10 } = {}) 
         const instruction = instructionEvidence(openToken);
         const closeText = symmetricCloseText(openToken);
         const symmetricToken = byText.get(closeText);
+        const lexicon = lexiconStrength(openToken.name);
+        const quoted = QUOTED_LITERAL_PATTERN.test(String(openToken.name).trim());
+        const prefill = openChunks.some(index => chunkMeta[index]?.isPrefill === true);
 
         const add = (suffix, pairing) => {
             const key = `${openToken.text}\u0000${suffix}`;
@@ -553,6 +789,9 @@ export function detectReasoningTags(chunks, { mode = 'safe', limit = 10 } = {}) 
                 keyword,
                 instruction: instruction !== '',
                 blocklisted: blocklisted(openToken.name),
+                lexicon,
+                quoted,
+                prefill,
                 cotEntry: cotTier > 0,
                 cotTier,
                 enabledEntry,
@@ -567,18 +806,20 @@ export function detectReasoningTags(chunks, { mode = 'safe', limit = 10 } = {}) 
         if (symmetricToken && !onlyInAntiChunks(symmetricToken, chunkMeta)) {
             add(symmetricToken.text, 'symmetric');
         } else {
+            // 开闭同名但不同形（<think> … </thinking>）
+            const variantClose = findVariantClose(openToken, tokens, chunkMeta);
             // 开闭标记被拆到两个思维链条目里（如「思维链动态开场」开、「思维链收尾」合）：
             // 只要两边都在思维链条目里，也认
             const crossClose = findCrossEntryClose(openToken, byText, chunkMeta);
-            if (crossClose) {
+            const keywordClose = keyword ? findKeywordClose(openToken, tokens, chunkMeta) : null;
+            if (variantClose) {
+                add(variantClose.text, 'variant');
+            } else if (crossClose) {
                 add(crossClose.text, 'cross-entry');
-            } else if (keyword) {
-                const keywordClose = findKeywordClose(openToken, tokens, chunkMeta);
-                if (keywordClose) {
-                    add(keywordClose.text, 'keyword');
-                } else if (SYNTHESIZABLE_STYLES.has(openToken.style)) {
-                    add(closeText, 'synthesized');
-                }
+            } else if (keywordClose) {
+                add(keywordClose.text, 'keyword');
+            } else if (SYNTHESIZABLE_STYLES.has(openToken.style) && (keyword || lexicon > 0)) {
+                add(closeText, 'synthesized');
             }
         }
     }
@@ -587,28 +828,50 @@ export function detectReasoningTags(chunks, { mode = 'safe', limit = 10 } = {}) 
 
     // 安全模式：按可信度分档，取最高一档（同一档内再按得分排序）
     const instructed = candidates.filter(candidate => candidate.cotTier === 0 && candidate.instruction);
+    // 词典兜底：名字就是思维链强词、而且开闭可靠，但所在条目与措辞都不规整
+    const lexicographic = candidates.filter(candidate => candidate.cotTier === 0
+        && candidate.lexicon === 2
+        && !candidate.quoted
+        && (candidate.pairing === 'symmetric'
+            || candidate.pairing === 'variant'
+            || candidate.pairing === 'cross-entry'
+            || candidate.pairing === 'keyword'
+            || candidate.prefill));
     const groups = [
         { tier: 4, pool: candidates.filter(c => c.cotTier === 3 && !c.disabledOnly), kind: 'cot-primary' },
         { tier: 3, pool: candidates.filter(c => c.cotTier === 3), kind: 'cot-primary-any' },
         { tier: 2, pool: candidates.filter(c => c.cotTier === 2 && !c.disabledOnly), kind: 'cot-secondary' },
         { tier: 1, pool: candidates.filter(c => c.cotTier === 2), kind: 'cot-secondary-any' },
         { tier: 0, pool: instructed, kind: 'instruction' },
+        { tier: -1, pool: lexicographic, kind: 'lexicon' },
     ];
 
     let pool = candidates;
     let poolKind = 'all';
     let tier = -1;
     if (mode !== 'aggressive') {
-        const group = groups.find(item => item.pool.length > 0);
-        if (group) {
-            pool = group.pool;
-            poolKind = group.kind;
-            tier = group.tier;
-        } else {
-            pool = [];
-            poolKind = 'empty';
-            tier = -1;
+        // 逐档往下找：某一档里的候选虽然存在、但全被判不合格时，不能就此返回 null
+        // （真实案例：最高档只有 `<continue>` 这类控制标签，真正的 `<thinking>` 在下一档）。
+        // 一档都不合格时，仍然把最高那一档留在 pool 里给用户看「找到了但不敢用」。
+        let reportGroup = null;
+        let hit = null;
+        for (const item of groups) {
+            if (item.pool.length === 0) {
+                continue;
+            }
+            if (!reportGroup) {
+                reportGroup = item;
+            }
+            const candidate = item.pool.find(entry => isApplicable(entry, mode));
+            if (candidate) {
+                reportGroup = item;
+                hit = candidate;
+                break;
+            }
         }
+        pool = reportGroup ? reportGroup.pool : [];
+        poolKind = reportGroup ? reportGroup.kind : 'empty';
+        tier = reportGroup ? reportGroup.tier : -1;
     }
 
     const poolSet = new Set(pool);
@@ -623,7 +886,54 @@ export function detectReasoningTags(chunks, { mode = 'safe', limit = 10 } = {}) 
         cotCandidateCount: candidates.filter(candidate => candidate.cotTier > 0).length,
         pool: poolKind,
         tier,
+        diagnostics: buildDiagnostics({ candidates, pool, poolKind, best, mode, tokens }),
     };
+}
+
+/**
+ * 为什么没识别出来 / 为什么选了它。给设置面板的「识别报告」用，用户能自己判断。
+ * @param {{candidates: object[], pool: object[], poolKind: string, best: object|null, mode: string, tokens: object[]}} input
+ */
+function buildDiagnostics({ candidates, pool, poolKind, best, mode, tokens }) {
+    const reasons = [];
+    const push = (tag, reason) => {
+        if (reasons.length < 8 && !reasons.some(item => item.tag === tag)) {
+            reasons.push({ tag, reason });
+        }
+    };
+
+    for (const candidate of candidates) {
+        if (pool.includes(candidate)) {
+            continue;
+        }
+        if (candidate.blocklisted) {
+            push(candidate.prefix, '结构性标签（CONTEXT / NPC / 状态栏一类），不当作思维链');
+        } else if (FORMAT_SHELL_PATTERN.test(candidate.tagName)) {
+            push(candidate.prefix, '只是格式外壳（*_format），不是模型真正输出的块');
+        } else if (candidate.cotTier > 0) {
+            push(candidate.prefix, '来自思维链条目，但可信度低于已选中的那一档');
+        } else {
+            push(candidate.prefix, '所在条目与思维链无关，也没有「写在这对标签里」这类说明');
+        }
+    }
+
+    if (best) {
+        return { mode, pool: poolKind, total: candidates.length, chosen: best.prefix, reasons: reasons.slice(0, 5) };
+    }
+
+    for (const candidate of pool) {
+        if (!isApplicable(candidate, mode)) {
+            push(candidate.prefix, candidate.pairing === 'synthesized'
+                ? '只看到开标记，没法确定闭合标签（可在面板里手动锁定）'
+                : '证据不足，安全模式不采用');
+        }
+    }
+    if (candidates.length === 0) {
+        push('—', tokens.length === 0
+            ? '预设里没有任何括号标记：可能它靠模型原生思维链，不需要自动解析'
+            : '有括号标记，但都在结构性标签黑名单里');
+    }
+    return { mode, pool: poolKind, total: candidates.length, chosen: null, reasons: reasons.slice(0, 5) };
 }
 
 /**
@@ -688,6 +998,7 @@ export function describeCandidate(candidate) {
     }
     const pairingLabel = {
         symmetric: '开闭成对',
+        variant: '开闭同名不同形（如 <think> … </thinking>）',
         'cross-entry': '开闭在同属思维链的两个条目里',
         keyword: '由关键词闭合标记配对',
         synthesized: '仅见开标记，闭合标签为推断值',
@@ -695,6 +1006,8 @@ export function describeCandidate(candidate) {
     const flags = [
         candidate.cotTier === 3 ? '来自思维链主条目' : (candidate.cotEntry ? '来自思维链条目' : null),
         candidate.keyword ? '标签名含思维链关键词' : null,
+        candidate.lexicon === 2 ? '标签名在思维链词典里' : null,
+        candidate.prefill ? '出现在助手预填充里' : null,
         candidate.instruction ? '预设里写明包裹方式' : null,
         candidate.disabledOnly ? '所属条目当前未启用' : null,
     ].filter(Boolean);

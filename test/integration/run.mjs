@@ -708,6 +708,77 @@ test('没识别出标签的预设：前后缀不动，但自动解析开关照�
     assert.match(status(), /前缀\/后缀保持不动；自动解析开/);
 });
 
+/* ---------------- 手动设置：记住 / 锁定 / 识别强度 ---------------- */
+
+/** 模拟 ST 自己把输入框的值写回 power_user（真实 ST 里这个绑定在扩展之前） */
+function typeReasoning(field, value) {
+    power_user.reasoning[field] = value;
+    $(`#reasoning_${field}`).val(value).trigger('input');
+}
+
+test('手改推理前缀会被记成规则：切走再切回来不再被识别结果覆盖', () => {
+    resetExtensionSettings();
+    setCurrentPreset('普通预设', COT_PROMPTS);
+    assert.equal(power_user.reasoning.prefix, '<脑内会议>', '先由自动识别写入');
+
+    typeReasoning('prefix', '<我自己写的>');
+    const rule = settings().rules.find(item => item.matchType === 'exact' && item.pattern === '普通预设');
+    assert.ok(rule, '手改应当生成精确匹配规则');
+    assert.equal(rule.prefix, '<我自己写的>');
+    assert.equal(rule.enabled, true);
+    assert.match(rule.note, /手改记住/);
+    assert.match(status(), /已记住你手动改的前缀/);
+
+    setCurrentPreset('另一个普通预设', COT_PROMPTS);
+    assert.equal(power_user.reasoning.prefix, '<脑内会议>', '其它预设不受影响');
+    setCurrentPreset('普通预设', COT_PROMPTS);
+    assert.equal(power_user.reasoning.prefix, '<我自己写的>', '手改的值被规则守住');
+});
+
+test('关掉「记住手改」后，手改只改值不生成规则', () => {
+    resetExtensionSettings();
+    setCurrentPreset('普通预设', COT_PROMPTS);
+    $('#raps_remember_manual').prop('checked', false).trigger('input');
+    assert.equal(settings().rememberManual, false);
+    assert.match(status(), /已关闭/);
+
+    const before = settings().rules.length;
+    typeReasoning('suffix', '<临时后缀>');
+    assert.equal(settings().rules.length, before, '不应当新增规则');
+    assert.equal(power_user.reasoning.suffix, '<临时后缀>');
+});
+
+test('「锁定当前」把 ST 里现在的值写成规则', () => {
+    resetExtensionSettings();
+    setCurrentPreset('普通预设', COT_PROMPTS);
+    power_user.reasoning.prefix = '<锁定前缀>';
+    power_user.reasoning.suffix = '<锁定后缀>';
+    $('#raps_pin_current').trigger('click');
+
+    const rule = settings().rules.find(item => item.matchType === 'exact' && item.pattern === '普通预设');
+    assert.ok(rule, '应当生成规则');
+    assert.equal(rule.prefix, '<锁定前缀>');
+    assert.equal(rule.suffix, '<锁定后缀>');
+    assert.equal(settings().lastApplied.source, 'manual');
+    assert.match(status(), /已锁定预设/);
+
+    setCurrentPreset('另一个普通预设', COT_PROMPTS);
+    setCurrentPreset('普通预设', COT_PROMPTS);
+    assert.equal(power_user.reasoning.prefix, '<锁定前缀>');
+    assert.equal(power_user.reasoning.suffix, '<锁定后缀>');
+});
+
+test('识别强度下拉框：切到 safe 会记进设置并立刻重新识别', () => {
+    resetExtensionSettings();
+    setCurrentPreset('普通预设', COT_PROMPTS);
+    assert.equal(settings().detectMode, 'balanced', '默认 balanced');
+
+    $('#raps_detect_mode').val('safe').trigger('change');
+    assert.equal(settings().detectMode, 'safe');
+    assert.equal(settings().lastDetected.mode, 'safe');
+    assert.equal($('#raps_detect_mode').val(), 'safe');
+});
+
 /* ---------------- 汇总 ---------------- */
 
 console.log(`\n${passed} passed, ${failures.length} failed`);
